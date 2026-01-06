@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model LastLetterState {
+  guildId    String   @id
+  channelId  String
+  lastWord   String?
+  lastLetter String?
+  usedWords  String[] @default([])
+  updatedAt  DateTime @updatedAt
+}
+
+model CountingState {
+  guildId    String   @id
+  channelId  String
+  current    Int      @default(0)
+  lastUserId String?
+  updatedAt  DateTime @updatedAt
+}
+
+model CountingUserStat {
+  guildId   String
+  userId    String
+  points    Int      @default(0)
+  lastCount DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([guildId, userId])
+}
+
+model PhoneGuyConfig {
+  guildId      String @id
+  channelId    String?
+  logChannelId String?
+  updatedAt    DateTime @updatedAt
+}
+
+model PhoneGuyOptIn {
+  guildId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@id([guildId, userId])
+}
+
+model PhoneGuyQueue {
+  id        String   @id @default(cuid())
+  userId    String
+  guildId   String
+  mode      String   // "global"
+  createdAt DateTime @default(now())
+}
+
+model PhoneGuyCall {
+  id        String   @id @default(cuid())
+  userAId   String
+  guildAId  String
+  userBId   String
+  guildBId  String
+  mode      String   // "local" | "global"
+  status    String   @default("active") // "active" | "ended"
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+}
+
+model PhoneGuyBlock {
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  @@id([blockerId, blockedId])
+}
+
+model PhoneGuyCooldown {
+  userId    String @id
+  lastStart DateTime
+}
+
+model PhoneGuyLog {
+  id        String   @id @default(cuid())
+  type      String   // "queue_join" | "match" | "end" | "say"
+  mode      String?  // "local" | "global"
+  callId    String?
+  guildId   String?
+  userId    String?
+  otherUserId String?
+  message   String?
+  createdAt DateTime @default(now())
+}
