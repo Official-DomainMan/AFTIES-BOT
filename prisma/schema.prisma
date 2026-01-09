@@ -93,3 +93,37 @@ model PhoneGuyLog {
   message   String?
   createdAt DateTime @default(now())
 }
+
+model ModConfig {
+  guildId      String   @id
+  logChannelId String?
+  updatedAt    DateTime @updatedAt
+}
+
+model Infraction {
+  id        String   @id @default(cuid())
+  guildId   String
+  userId    String
+  modId     String
+  type      String   // "warn" | "timeout" | "kick" | "ban" | "purge" | "note"
+  reason    String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  expiresAt DateTime?
+
+  @@index([guildId, userId, createdAt])
+  @@index([guildId, createdAt])
+}
+
+model ModPolicy {
+  guildId              String   @id
+  warnExpiresDays      Int      @default(30)
+  warnWindowDays       Int      @default(7)
+  autoTimeoutWarnCount Int      @default(3)
+  autoTimeoutMinutes   Int      @default(60)
+
+  dmOnWarn             Boolean  @default(false)
+  dmOnAutoTimeout      Boolean  @default(false)
+
+  updatedAt            DateTime @updatedAt
+}

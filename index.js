@@ -2,72 +2,90 @@
 const path = require("path");
 require("dotenv").config();
 
-const { Collection } = require("discord.js");
-const { createClient } = require("./src/core/client");
+const { Client, GatewayIntentBits, Collection } = require("discord.js");
 const { loadEvents } = require("./src/handlers/eventLoader");
+const { initMusic } = require("./src/modules/music/player");
 
 if (!process.env.DISCORD_TOKEN) {
   console.error("❌ DISCORD_TOKEN missing in .env");
   process.exit(1);
 }
 
-const client = createClient();
+// Create the Discord client
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.DirectMessages,
+  ],
+});
 
-// ✅ FIX: ensure commands collection exists
 client.commands = new Collection();
 
-// ===============================
-// RECURSIVE COMMAND LOADER (DEBUG)
-// ===============================
-function getAllJsFiles(dir) {
+/**
+ * Recursively collect all .js files under a directory
+ */
+function getAllJsFiles(dir, out = []) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
-  const files = [];
 
   for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
+    const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...getAllJsFiles(fullPath));
+      getAllJsFiles(full, out);
     } else if (entry.isFile() && entry.name.endsWith(".js")) {
-      files.push(fullPath);
+      out.push(full);
     }
   }
 
-  return files;
+  return out;
 }
 
-function loadCommandsRecursive() {
-  const srcPath = path.join(__dirname, "src");
-  const allFiles = getAllJsFiles(srcPath);
+/**
+ * Load all commands from any ".../commands/..." directory
+ */
+function loadCommandsRecursive(rootDir) {
+  const allFiles = getAllJsFiles(rootDir);
 
+  // Only treat files inside a "commands" folder as slash commands
   const commandFiles = allFiles.filter((p) =>
     p.split(path.sep).includes("commands")
   );
 
-  console.log("📂 Command files found:", commandFiles.length);
-
-  let count = 0;
+  console.log(`📂 Command files found: ${commandFiles.length}`);
+  let loaded = 0;
 
   for (const filePath of commandFiles) {
-    const command = require(filePath);
+    try {
+      const command = require(filePath);
 
-    if (!command?.data?.name || typeof command.execute !== "function") {
-      console.log("⚠️ Skipped invalid command:", filePath);
-      continue;
+      if (!command?.data?.name || typeof command.execute !== "function") {
+        console.log(`⚠️ Skipped (invalid command): ${filePath}`);
+        continue;
+      }
+
+      client.commands.set(command.data.name, command);
+      loaded++;
+      console.log(`✅ ${command.data.name} ← ${filePath}`);
+    } catch (err) {
+      console.error(`❌ Failed to load command file: ${filePath}`);
+      console.error(err);
     }
-
-    client.commands.set(command.data.name, command);
-    count++;
-
-    console.log("✅", command.data.name, "←", filePath);
   }
 
-  console.log(`📦 Loaded ${count} commands`);
+  console.log(`📦 Loaded ${loaded} commands`);
 }
 
-loadCommandsRecursive();
+// Load all commands from src/
+loadCommandsRecursive(path.join(__dirname, "src"));
 
-// Load events
+// Initialize the music system (DisTube, Spotify/Soundcloud, etc.)
+initMusic(client);
+
+// Load events from src/events via your event loader
 loadEvents(client, path.join(__dirname, "src/events"));
 
-// Login
+// Log in
 client.login(process.env.DISCORD_TOKEN);
