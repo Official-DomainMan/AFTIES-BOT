@@ -7,30 +7,39 @@ module.exports = {
     if (!interaction.isChatInputCommand()) return;
 
     const command = interaction.client.commands.get(interaction.commandName);
-    if (!command) return;
+
+    if (!command) {
+      console.warn(
+        `[interactionCreate] No command registered for "${interaction.commandName}"`
+      );
+      return;
+    }
 
     try {
       await command.execute(interaction);
     } catch (error) {
-      console.error(`${interaction.commandName} error:`, error);
+      console.error(
+        `[${command.data?.name || interaction.commandName}] error:`,
+        error
+      );
 
-      // Try to send an error response, but don't let failures crash the bot
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp({
-            content: "❌ Error running command",
-            ephemeral: true,
-          });
-        } else {
+      // Only try to send a fallback error if nothing was sent yet
+      if (!interaction.replied && !interaction.deferred) {
+        try {
           await interaction.reply({
             content: "❌ Error running command",
             ephemeral: true,
           });
+        } catch (err) {
+          console.error("Failed to send error response:", err);
         }
-      } catch (replyErr) {
-        // This is where 10062 ("Unknown interaction") can happen;
-        // just log it and swallow so the client doesn't crash.
-        console.error("Failed to send error response:", replyErr);
+      } else {
+        // We've already acknowledged the interaction; log and move on.
+        console.warn(
+          `[${
+            command.data?.name || interaction.commandName
+          }] interaction already acknowledged; skipped error reply.`
+        );
       }
     }
   },

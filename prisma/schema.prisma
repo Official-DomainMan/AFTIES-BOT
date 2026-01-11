@@ -127,3 +127,12 @@ model ModPolicy {
 
   updatedAt            DateTime @updatedAt
 }
+model LastLetterScore {
+  id        Int      @id @default(autoincrement())
+  guildId   String
+  userId    String
+  score     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, userId])
+}
