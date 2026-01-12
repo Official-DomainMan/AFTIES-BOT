@@ -8,7 +8,8 @@
     "start": "node index.js",
     "deploy": "node scripts/deploy-commands.js",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:generate": "prisma generate"
+    "prisma:generate": "prisma generate",
+    "clear:global": "node scripts/clear-global-commands.js"
   },
   "keywords": [],
   "author": "",
