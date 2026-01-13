@@ -1,6 +1,52 @@
 // src/commands/help.js
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 
+/**
+ * Simple categorization based on command name.
+ * You can tweak these mappings anytime without touching the core logic.
+ */
+function getCategory(commandName) {
+  // Games
+  if (
+    commandName.startsWith("counting") ||
+    commandName.startsWith("lastletter") ||
+    commandName === "phone"
+  ) {
+    return "🎮 Games";
+  }
+
+  // Moderation
+  if (
+    [
+      "warn",
+      "warn-remove",
+      "timeout",
+      "untimeout",
+      "note",
+      "infractions",
+      "modlog",
+      "modpolicy",
+      "appeal",
+      "purge",
+    ].includes(commandName)
+  ) {
+    return "🛡️ Moderation";
+  }
+
+  // Music
+  if (["play", "skip", "stop", "leave", "queue"].includes(commandName)) {
+    return "🎵 Music";
+  }
+
+  // Reddit / social
+  if (commandName.startsWith("reddit")) {
+    return "📎 Reddit & Social";
+  }
+
+  // Default bucket
+  return "⚙️ Utility";
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("help")
@@ -10,81 +56,77 @@ module.exports = {
     try {
       const guildName = interaction.guild?.name ?? "this server";
 
+      // Grab all registered commands from the client
+      const allCommands = Array.from(interaction.client.commands.values());
+
+      if (!allCommands.length) {
+        return interaction.reply({
+          content: "❌ I don't see any commands registered right now.",
+          ephemeral: true,
+        });
+      }
+
+      // Group commands by category
+      const groups = new Map(); // category -> [ " /name — desc" ]
+      for (const cmd of allCommands) {
+        const name = cmd?.data?.name;
+        const description = cmd?.data?.description ?? "No description set.";
+
+        if (!name) continue;
+
+        const category = getCategory(name);
+        if (!groups.has(category)) groups.set(category, []);
+
+        groups.get(category).push(`• **/${name}** — ${description}`);
+      }
+
+      // Sort categories for a consistent order
+      const orderedCategories = [
+        "🎮 Games",
+        "🛡️ Moderation",
+        "🎵 Music",
+        "📎 Reddit & Social",
+        "⚙️ Utility",
+      ];
+
+      const fields = [];
+
+      for (const category of orderedCategories) {
+        const items = groups.get(category);
+        if (!items || items.length === 0) continue;
+
+        fields.push({
+          name: category,
+          value: items.join("\n"),
+          inline: false,
+        });
+      }
+
+      // If some category slipped outside our known list, append them at the end
+      for (const [category, items] of groups.entries()) {
+        if (!orderedCategories.includes(category)) {
+          fields.push({
+            name: category,
+            value: items.join("\n"),
+            inline: false,
+          });
+        }
+      }
+
       const embed = new EmbedBuilder()
         .setTitle("📖 AFTIES BOT — Help Menu")
         .setDescription(
-          "Here’s what I can do right now.\n" +
-            "Use these slash commands in your server. Some require mod permissions."
+          "Here’s everything I currently know how to do.\n" +
+            "This list **auto-updates** whenever new slash commands are added."
         )
         .setColor(0xff66cc)
-        .addFields(
-          {
-            name: "🎮 Games (channel mini-games)",
-            value: [
-              "**/counting-set** — Set the counting channel.",
-              "**/counting-reset** — Reset the current count.",
-              "**/counting-rules** — Show how the counting game works.",
-              "**/counting-leaderboard** — Show top counters.",
-              "",
-              "**/lastletter-set** — Set the Last Letter game channel.",
-              "**/lastletter-reset** — Reset the Last Letter chain so any word can start.",
-              "**/lastletter-leaderboard** — Show top Last Letter players (points = word length).",
-              "",
-              "**/phone** — Start or configure the Phone Guy random call game.",
-            ].join("\n"),
-            inline: false,
-          },
-          {
-            name: "🛡️ Moderation",
-            value: [
-              "**/warn** — Warn a user (uses mod policy & auto-timeouts).",
-              "**/warn-remove** — Remove a warning from a user.",
-              "**/timeout** — Timeout a member for a set duration.",
-              "**/untimeout** — Remove an active timeout.",
-              "**/note** — Add a private moderation note.",
-              "**/infractions** — View a user’s warns & notes.",
-              "**/modlog** — Configure/show the moderation log channel.",
-              "**/modpolicy** — Configure auto-timeout thresholds + DM behavior.",
-              "**/appeal** — Share appeal info/template for punished users.",
-              "**/purge** — Bulk delete recent messages.",
-            ].join("\n"),
-            inline: false,
-          },
-          {
-            name: "🎵 Music",
-            value: [
-              "**/play** `<query>` — Join VC and play a track or playlist.",
-              "**/skip** — Skip the current track.",
-              "**/stop** — Stop playback and clear the queue.",
-              "**/queue** — Show the current music queue.",
-              "**/leave** — Disconnect the bot from voice.",
-            ].join("\n"),
-            inline: false,
-          },
-          {
-            name: "📎 Reddit",
-            value:
-              "**/reddit-top** `<subreddit>` — Show top posts from a subreddit as embeds.",
-            inline: false,
-          },
-          {
-            name: "⚙️ Utility",
-            value: [
-              "**/ping** — Check bot latency.",
-              "**/help** — Show this help menu.",
-              // add /botinfo here if/when you have it
-            ].join("\n"),
-            inline: false,
-          }
-        )
-        .setFooter({
-          text: `Serving ${guildName}`,
-        })
+        .addFields(fields)
+        .setFooter({ text: `Serving ${guildName}` })
         .setTimestamp();
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: false, // change to true if you want it private
+        ephemeral: false, // set to true if you ever want it private
       });
     } catch (err) {
       console.error("/help error:", err);
