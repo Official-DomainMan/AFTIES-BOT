@@ -1,130 +1,122 @@
 // src/modules/games/lastletter/handler.js
 const { prisma } = require("../../../core/database");
 
-// Map points → emoji for quick visual feedback
-const numberEmojis = {
-  1: "1️⃣",
-  2: "2️⃣",
-  3: "3️⃣",
-  4: "4️⃣",
-  5: "5️⃣",
-  6: "6️⃣",
-  7: "7️⃣",
-  8: "8️⃣",
-  9: "9️⃣",
-  10: "🔟",
-};
-
-function getPointsEmoji(points) {
-  if (points <= 0) return null;
-  if (points <= 10) return numberEmojis[points] || null;
-  // Long words just get sparkles
-  return "✨";
-}
-
-async function softWarn(channel, text) {
+/**
+ * Soft feedback: react ❌ and optionally send a short message that auto-deletes.
+ */
+async function softReject(message, reason) {
   try {
-    const msg = await channel.send(text);
-    setTimeout(() => msg.delete().catch(() => {}), 7000);
-  } catch {
-    // ignore
-  }
+    await message.react("❌").catch(() => {});
+  } catch {}
+
+  if (!reason) return;
+
+  try {
+    const reply = await message.reply(reason);
+    setTimeout(() => reply.delete().catch(() => {}), 5000);
+  } catch {}
 }
 
+/**
+ * Soft success reaction (✅) for valid words.
+ */
+async function softAccept(message) {
+  try {
+    await message.react("✅").catch(() => {});
+  } catch {}
+}
+
+/**
+ * Main Last Letter handler.
+ * - Enforces channel
+ * - Enforces alphabetic words
+ * - Enforces last-letter chaining
+ * - Enforces no re-use of previous words
+ * - Awards points (word length) to leaderboard
+ * - Tracks streak: currentStreak + bestStreak (global per guild)
+ */
 async function handleLastLetter(message) {
-  try {
-    if (message.author.bot) return;
-    if (!message.guild) return;
+  // Ignore bots & DMs
+  if (message.author.bot) return;
+  if (!message.guild) return;
 
-    const guildId = message.guild.id;
+  // Fetch game state for this guild
+  const state = await prisma.lastLetterState.findUnique({
+    where: { guildId: message.guild.id },
+  });
 
-    // Load state for this guild
-    const state = await prisma.lastLetterState.findUnique({
-      where: { guildId },
-    });
+  // Game not configured or wrong channel
+  if (!state) return;
+  if (message.channel.id !== state.channelId) return;
 
-    if (!state) return; // game not configured
-    if (message.channel.id !== state.channelId) return; // wrong channel
+  const raw = message.content.trim();
+  const word = raw.toLowerCase();
 
-    const raw = message.content.trim();
-    if (!raw) return;
+  // Basic validation: letters only, at least 2 chars (tweak if you want)
+  if (!/^[a-zA-Z]+$/.test(word) || word.length < 2) {
+    await message.delete().catch(() => {});
+    await softReject(
+      message,
+      "❌ Letters only, at least 2 characters. Try again."
+    );
+    return;
+  }
 
-    // Use first "word" in message as the play
-    const word = raw.split(/\s+/)[0];
-    const clean = word.toLowerCase();
+  // Check for word reuse
+  const used = state.usedWords || [];
+  if (used.includes(word)) {
+    await message.delete().catch(() => {});
+    await softReject(
+      message,
+      "❌ That word has already been used in this game."
+    );
+    return;
+  }
 
-    console.log("[lastletter-debug] state:", {
-      guildId: state.guildId,
-      channelId: state.channelId,
-      lastLetter: state.lastLetter,
-    });
-    console.log("[lastletter-debug] message:", {
-      authorId: message.author.id,
-      word,
-    });
+  // Enforce last-letter chaining if we have a previous word
+  if (state.lastWord && state.lastWord.length > 0) {
+    const expectedFirst = (
+      state.lastLetter ??
+      state.lastWord[state.lastWord.length - 1] ??
+      ""
+    ).toLowerCase();
 
-    // Only allow pure letters
-    if (!/^[a-zA-Z]+$/.test(clean)) {
-      await message.react("❌").catch(() => {});
-      await softWarn(
-        message.channel,
-        "❌ Letters only, babe. No spaces, numbers, or symbols."
+    if (expectedFirst && word[0] !== expectedFirst) {
+      await message.delete().catch(() => {});
+      await softReject(
+        message,
+        `❌ Wrong starting letter. Your word must start with **${expectedFirst.toUpperCase()}**.`
       );
-      console.log("[lastletter-debug] reject: non-letter");
       return;
     }
+  }
 
-    // Enforce starting letter if there is a previous lastLetter
-    if (state.lastLetter && state.lastLetter.length > 0) {
-      const expected = state.lastLetter.toLowerCase();
-      const actual = clean[0].toLowerCase();
+  // VALID WORD — award points and update streak
+  const points = word.length;
+  const lastChar = word[word.length - 1];
 
-      if (expected !== actual) {
-        await message.react("❌").catch(() => {});
-        await softWarn(
-          message.channel,
-          `❌ Wrong starting letter.\nLast word ended with **${expected.toUpperCase()}**, so your word must start with **${expected.toUpperCase()}**.`
-        );
-        console.log("[lastletter-debug] reject: wrong starting letter", {
-          expected,
-          actual,
-        });
-        return;
-      }
-    }
+  // Compute new streak values
+  const newCurrent = (state.currentStreak ?? 0) + 1;
+  const newBest = Math.max(state.bestStreak ?? 0, newCurrent);
 
-    // Valid play 🎉
-    const points = clean.length;
-    const ptsEmoji = getPointsEmoji(points);
+  // Update game state
+  await prisma.lastLetterState.update({
+    where: { guildId: message.guild.id },
+    data: {
+      lastWord: word,
+      lastLetter: lastChar,
+      usedWords: { push: word },
+      currentStreak: newCurrent,
+      bestStreak: newBest,
+    },
+  });
 
-    // React to the message
-    try {
-      await message.react("✅").catch(() => {});
-      if (ptsEmoji) {
-        await message.react(ptsEmoji).catch(() => {});
-      }
-    } catch {
-      // ignore reaction failures
-    }
-
-    // Update core game state in LastLetterState
-    await prisma.lastLetterState.update({
-      where: { guildId },
-      data: {
-        // store the last letter of this word
-        lastLetter: clean[clean.length - 1],
-        // push word into usedWords array
-        usedWords: {
-          push: clean,
-        },
-      },
-    });
-
-    // Update leaderboard in LastLetterScore
+  // Update leaderboard (assumes model LastLetterScore with fields: guildId, userId, score)
+  try {
     await prisma.lastLetterScore.upsert({
       where: {
         guildId_userId: {
-          guildId,
+          guildId: message.guild.id,
           userId: message.author.id,
         },
       },
@@ -132,21 +124,18 @@ async function handleLastLetter(message) {
         score: { increment: points },
       },
       create: {
-        guildId,
+        guildId: message.guild.id,
         userId: message.author.id,
         score: points,
       },
     });
-
-    console.log("[lastletter-debug] accepted:", {
-      word: clean,
-      points,
-      userId: message.author.id,
-    });
   } catch (err) {
-    console.error("[lastletter] handler error:", err);
-    // We don't reply in-channel here to keep it silent on failure.
+    console.error("[lastletter] leaderboard update error:", err);
+    // Don't fail the game just because leaderboard had an issue
   }
+
+  // React ✅ on success
+  await softAccept(message);
 }
 
 module.exports = { handleLastLetter };

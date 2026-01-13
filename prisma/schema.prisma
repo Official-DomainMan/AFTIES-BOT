@@ -8,12 +8,16 @@ datasource db {
 }
 
 model LastLetterState {
-  guildId    String   @id
+  guildId    String @id
   channelId  String
-  lastWord   String?
+  lastWord   String
   lastLetter String?
-  usedWords  String[] @default([])
+  usedWords  String[]
   updatedAt  DateTime @updatedAt
+
+  // 🔥 New streak fields
+  currentStreak Int @default(0)
+  bestStreak    Int @default(0)
 }
 
 model CountingState {
