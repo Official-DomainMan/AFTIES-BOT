@@ -2,140 +2,118 @@
 const { prisma } = require("../../../core/database");
 
 /**
- * Soft feedback: react ❌ and optionally send a short message that auto-deletes.
+ * Send a short warning message and delete it after a few seconds.
  */
-async function softReject(message, reason) {
+async function softWarn(channel, text) {
   try {
-    await message.react("❌").catch(() => {});
-  } catch {}
-
-  if (!reason) return;
-
-  try {
-    const reply = await message.reply(reason);
-    setTimeout(() => reply.delete().catch(() => {}), 5000);
-  } catch {}
+    const msg = await channel.send(text);
+    setTimeout(() => msg.delete().catch(() => {}), 5000);
+  } catch {
+    // ignore
+  }
 }
 
 /**
- * Soft success reaction (✅) for valid words.
- */
-async function softAccept(message) {
-  try {
-    await message.react("✅").catch(() => {});
-  } catch {}
-}
-
-/**
- * Main Last Letter handler.
- * - Enforces channel
- * - Enforces alphabetic words
- * - Enforces last-letter chaining
- * - Enforces no re-use of previous words
- * - Awards points (word length) to leaderboard
- * - Tracks streak: currentStreak + bestStreak (global per guild)
+ * Handle the Last Letter word game.
+ *
+ * Rules (simple version):
+ * - Only runs in the configured channel for this guild
+ * - Only accepts single-word messages, letters only
+ * - First word can be anything
+ * - After that, each word must start with the last letter of the previous word
+ * - Word cannot be reused (case-insensitive)
+ * - ✅ reaction for valid words, ❌ for invalid ones
  */
 async function handleLastLetter(message) {
-  // Ignore bots & DMs
   if (message.author.bot) return;
   if (!message.guild) return;
 
-  // Fetch game state for this guild
+  const guildId = message.guild.id;
+
+  // Load state for this guild
   const state = await prisma.lastLetterState.findUnique({
-    where: { guildId: message.guild.id },
+    where: { guildId },
   });
 
-  // Game not configured or wrong channel
-  if (!state) return;
+  if (!state) return; // game not set up for this guild
+
+  // Only act in the configured channel
   if (message.channel.id !== state.channelId) return;
 
   const raw = message.content.trim();
-  const word = raw.toLowerCase();
 
-  // Basic validation: letters only, at least 2 chars (tweak if you want)
-  if (!/^[a-zA-Z]+$/.test(word) || word.length < 2) {
+  // Only allow a single "word" – no spaces
+  const parts = raw.split(/\s+/);
+  if (parts.length !== 1) {
     await message.delete().catch(() => {});
-    await softReject(
-      message,
-      "❌ Letters only, at least 2 characters. Try again."
+    await softWarn(
+      message.channel,
+      "❌ One word at a time, baby. No spaces allowed."
     );
     return;
   }
 
-  // Check for word reuse
+  const word = parts[0].toLowerCase();
+
+  // Only letters, at least 2 chars to keep it fun
+  if (!/^[a-z]+$/.test(word) || word.length < 2) {
+    await message.delete().catch(() => {});
+    await softWarn(message.channel, "❌ Letters only, at least 2 characters.");
+    return;
+  }
+
+  // Check word reuse
   const used = state.usedWords || [];
   if (used.includes(word)) {
     await message.delete().catch(() => {});
-    await softReject(
-      message,
-      "❌ That word has already been used in this game."
+    await softWarn(
+      message.channel,
+      "❌ That word's already been used. Pick another."
     );
     return;
   }
 
-  // Enforce last-letter chaining if we have a previous word
+  // If this is not the first word, enforce last-letter rule
   if (state.lastWord && state.lastWord.length > 0) {
     const expectedFirst = (
-      state.lastLetter ??
-      state.lastWord[state.lastWord.length - 1] ??
-      ""
+      state.lastLetter || state.lastWord[state.lastWord.length - 1]
     ).toLowerCase();
+    const actualFirst = word[0].toLowerCase();
 
-    if (expectedFirst && word[0] !== expectedFirst) {
+    if (actualFirst !== expectedFirst) {
       await message.delete().catch(() => {});
-      await softReject(
-        message,
+      await softWarn(
+        message.channel,
         `❌ Wrong starting letter. Your word must start with **${expectedFirst.toUpperCase()}**.`
       );
       return;
     }
   }
 
-  // VALID WORD — award points and update streak
-  const points = word.length;
-  const lastChar = word[word.length - 1];
-
-  // Compute new streak values
-  const newCurrent = (state.currentStreak ?? 0) + 1;
-  const newBest = Math.max(state.bestStreak ?? 0, newCurrent);
-
-  // Update game state
-  await prisma.lastLetterState.update({
-    where: { guildId: message.guild.id },
-    data: {
-      lastWord: word,
-      lastLetter: lastChar,
-      usedWords: { push: word },
-      currentStreak: newCurrent,
-      bestStreak: newBest,
-    },
-  });
-
-  // Update leaderboard (assumes model LastLetterScore with fields: guildId, userId, score)
+  // If we get here, the word is valid → react ✅ and update state
   try {
-    await prisma.lastLetterScore.upsert({
-      where: {
-        guildId_userId: {
-          guildId: message.guild.id,
-          userId: message.author.id,
+    await message.react("✅").catch(() => {});
+
+    const lastLetter = word[word.length - 1];
+
+    await prisma.lastLetterState.update({
+      where: { guildId },
+      data: {
+        lastWord: word,
+        lastLetter,
+        usedWords: {
+          push: word,
         },
-      },
-      update: {
-        score: { increment: points },
-      },
-      create: {
-        guildId: message.guild.id,
-        userId: message.author.id,
-        score: points,
       },
     });
   } catch (err) {
-    console.error("[lastletter] leaderboard update error:", err);
-    // Don't fail the game just because leaderboard had an issue
+    console.error("[lastletter] error updating state:", err);
+    // Don't delete the message if DB fails; just soft-warn
+    await softWarn(
+      message.channel,
+      "⚠️ Word accepted, but I couldn't save the game state. Tell my dev."
+    );
   }
-
-  // React ✅ on success
-  await softAccept(message);
 }
 
 module.exports = { handleLastLetter };
