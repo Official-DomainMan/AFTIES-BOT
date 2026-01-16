@@ -140,3 +140,13 @@ model LastLetterScore {
 
   @@unique([guildId, userId])
 }
+model LevelProfile {
+  guildId     String
+  userId      String
+  xp          Int      @default(0)
+  level       Int      @default(0)
+  lastXpAt    DateTime?
+
+  @@id([guildId, userId])
+  @@index([guildId, xp(sort: Desc)])
+}
