@@ -150,3 +150,19 @@ model LevelProfile {
   @@id([guildId, userId])
   @@index([guildId, xp(sort: Desc)])
 }
+model LevelRoleReward {
+  guildId String
+  level   Int
+  roleId  String
+
+  @@id([guildId, level])
+}
+model LevelRole {
+  guildId      String
+  roleId       String
+  requiredLevel Int
+
+  created DateTime @default(now())
+
+  @@id([guildId, roleId])
+}
