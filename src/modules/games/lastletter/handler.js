@@ -2,118 +2,185 @@
 const { prisma } = require("../../../core/database");
 
 /**
- * Send a short warning message and delete it after a few seconds.
+ * We track the last *valid* player per guild+channel in memory.
+ * Key: `${guildId}:${channelId}` -> userId
  */
-async function softWarn(channel, text) {
+const lastPlayerByChannel = new Map();
+
+// Simple points -> emoji mapping for reactions
+function getPointsEmoji(len) {
+  if (len === 4) return "4️⃣";
+  if (len === 5) return "5️⃣";
+  if (len === 6) return "6️⃣";
+  if (len >= 7) return "7️⃣";
+  return "✨";
+}
+
+// Basic word cleaning: letters only, lowercase
+function normalizeWord(raw) {
+  if (!raw) return null;
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  return cleaned.length ? cleaned : null;
+}
+
+// For invalid plays: react ❌ and delete shortly after
+async function handleInvalidPlay(message, reason) {
   try {
-    const msg = await channel.send(text);
-    setTimeout(() => msg.delete().catch(() => {}), 5000);
-  } catch {
-    // ignore
+    console.log("[lastletter-invalid]", {
+      guildId: message.guild?.id,
+      channelId: message.channel?.id,
+      userId: message.author?.id,
+      reason,
+      content: message.content,
+    });
+
+    try {
+      await message.react("❌");
+    } catch (e) {
+      console.warn("[lastletter] failed to react ❌:", e);
+    }
+
+    // delete after a short delay so users *see* the X briefly
+    setTimeout(() => {
+      message
+        .delete()
+        .catch((err) =>
+          console.warn("[lastletter] failed to delete invalid message:", err)
+        );
+    }, 1500);
+  } catch (err) {
+    console.error("[lastletter] handleInvalidPlay wrapper error:", err);
   }
 }
 
 /**
- * Handle the Last Letter word game.
- *
- * Rules (simple version):
- * - Only runs in the configured channel for this guild
- * - Only accepts single-word messages, letters only
- * - First word can be anything
- * - After that, each word must start with the last letter of the previous word
- * - Word cannot be reused (case-insensitive)
- * - ✅ reaction for valid words, ❌ for invalid ones
+ * Main last-letter handler.
+ * Called from src/events/messageCreate.js as handleLastLetterMessage(message)
  */
-async function handleLastLetter(message) {
-  if (message.author.bot) return;
-  if (!message.guild) return;
+async function handleLastLetterMessage(message) {
+  try {
+    // Ignore bots / DMs
+    if (!message.guild || message.author.bot) return;
 
-  const guildId = message.guild.id;
+    const guildId = message.guild.id;
+    const channelId = message.channel.id;
 
-  // Load state for this guild
-  const state = await prisma.lastLetterState.findUnique({
-    where: { guildId },
-  });
+    const rawWord = message.content;
+    const word = normalizeWord(rawWord);
 
-  if (!state) return; // game not set up for this guild
+    if (!word) return; // ignore messages that aren't plain-ish words
 
-  // Only act in the configured channel
-  if (message.channel.id !== state.channelId) return;
+    // Load state for this guild
+    const state = await prisma.lastLetterState.findUnique({
+      where: { guildId },
+    });
 
-  const raw = message.content.trim();
+    // If no state or this channel isn't the active last-letter channel, ignore
+    if (!state || state.channelId !== channelId) return;
 
-  // Only allow a single "word" – no spaces
-  const parts = raw.split(/\s+/);
-  if (parts.length !== 1) {
-    await message.delete().catch(() => {});
-    await softWarn(
-      message.channel,
-      "❌ One word at a time, baby. No spaces allowed."
-    );
-    return;
-  }
+    // Debug log for you
+    console.log("[lastletter-debug] state:", {
+      guildId: state.guildId,
+      channelId: state.channelId,
+      lastWord: state.lastWord,
+      lastLetter: state.lastLetter,
+      currentStreak: state.currentStreak,
+      bestStreak: state.bestStreak,
+    });
 
-  const word = parts[0].toLowerCase();
+    console.log("[lastletter-debug] message:", {
+      authorId: message.author.id,
+      word,
+    });
 
-  // Only letters, at least 2 chars to keep it fun
-  if (!/^[a-z]+$/.test(word) || word.length < 2) {
-    await message.delete().catch(() => {});
-    await softWarn(message.channel, "❌ Letters only, at least 2 characters.");
-    return;
-  }
+    const key = `${guildId}:${channelId}`;
+    const isFirstTurn = !state.lastWord || state.lastWord.length === 0;
 
-  // Check word reuse
-  const used = state.usedWords || [];
-  if (used.includes(word)) {
-    await message.delete().catch(() => {});
-    await softWarn(
-      message.channel,
-      "❌ That word's already been used. Pick another."
-    );
-    return;
-  }
+    // 🔒 Don't allow the same user to play two valid words in a row,
+    // but ONLY after the game has started (i.e., not on the very first word).
+    if (!isFirstTurn) {
+      const lastPlayerId = lastPlayerByChannel.get(key);
+      if (lastPlayerId === message.author.id) {
+        await handleInvalidPlay(message, "same-user-twice");
+        return;
+      }
+    }
 
-  // If this is not the first word, enforce last-letter rule
-  if (state.lastWord && state.lastWord.length > 0) {
-    const expectedFirst = (
-      state.lastLetter || state.lastWord[state.lastWord.length - 1]
-    ).toLowerCase();
-    const actualFirst = word[0].toLowerCase();
+    // ✅ Validate the word against rules
 
-    if (actualFirst !== expectedFirst) {
-      await message.delete().catch(() => {});
-      await softWarn(
-        message.channel,
-        `❌ Wrong starting letter. Your word must start with **${expectedFirst.toUpperCase()}**.`
-      );
+    // 1) If it's NOT the first turn, check starting letter matches last required letter
+    if (!isFirstTurn) {
+      const expectedFirst = (
+        state.lastLetter ||
+        state.lastWord[state.lastWord.length - 1] ||
+        ""
+      ).toLowerCase();
+
+      if (!expectedFirst || word[0] !== expectedFirst) {
+        await handleInvalidPlay(message, "wrong-start-letter");
+        return;
+      }
+    }
+
+    // 2) Check that the word hasn't been used already
+    const alreadyUsed = state.usedWords.includes(word);
+    if (alreadyUsed) {
+      await handleInvalidPlay(message, "reused-word");
       return;
     }
-  }
 
-  // If we get here, the word is valid → react ✅ and update state
-  try {
-    await message.react("✅").catch(() => {});
+    // At this point, the play is VALID 🎉
 
-    const lastLetter = word[word.length - 1];
+    const lastChar = word[word.length - 1];
+    const pointsEmoji = getPointsEmoji(word.length);
 
+    // React to the *message* — do NOT delete it
+    try {
+      await message.react("✅");
+      await message.react(pointsEmoji);
+    } catch (e) {
+      console.warn("[lastletter] failed to add reactions:", e);
+    }
+
+    // Update streak: +1 per valid word
+    const newCurrentStreak = (state.currentStreak || 0) + 1;
+    const newBestStreak = Math.max(state.bestStreak || 0, newCurrentStreak);
+
+    // Update DB state
     await prisma.lastLetterState.update({
       where: { guildId },
       data: {
         lastWord: word,
-        lastLetter,
+        lastLetter: lastChar,
         usedWords: {
           push: word,
         },
+        currentStreak: newCurrentStreak,
+        bestStreak: newBestStreak,
       },
     });
+
+    // Remember who played last for this channel (for the "no double turn" rule)
+    lastPlayerByChannel.set(key, message.author.id);
+
+    console.log("[lastletter-debug] updated state:", {
+      guildId,
+      channelId,
+      lastWord: word,
+      lastLetter: lastChar,
+      currentStreak: newCurrentStreak,
+      bestStreak: newBestStreak,
+      lastPlayerId: message.author.id,
+    });
   } catch (err) {
-    console.error("[lastletter] error updating state:", err);
-    // Don't delete the message if DB fails; just soft-warn
-    await softWarn(
-      message.channel,
-      "⚠️ Word accepted, but I couldn't save the game state. Tell my dev."
-    );
+    console.error("[lastletter] handleLastLetterMessage error:", err);
+    // No reply here; it's a passive message-based game.
   }
 }
 
-module.exports = { handleLastLetter };
+module.exports = {
+  handleLastLetterMessage,
+};
