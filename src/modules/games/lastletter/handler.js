@@ -16,6 +16,13 @@ function getPointsEmoji(len) {
   return "✨";
 }
 
+// Points for scoring table (leaderboard)
+// Right now: 4-letter = 4, 5-letter = 5, etc.
+function getPointsValue(word) {
+  if (!word) return 0;
+  return word.length;
+}
+
 // Basic word cleaning: letters only, lowercase
 function normalizeWord(raw) {
   if (!raw) return null;
@@ -48,7 +55,7 @@ async function handleInvalidPlay(message, reason) {
       message
         .delete()
         .catch((err) =>
-          console.warn("[lastletter] failed to delete invalid message:", err)
+          console.warn("[lastletter] failed to delete invalid message:", err),
         );
     }, 1500);
   } catch (err) {
@@ -89,6 +96,7 @@ async function handleLastLetterMessage(message) {
       lastLetter: state.lastLetter,
       currentStreak: state.currentStreak,
       bestStreak: state.bestStreak,
+      usedWordsCount: state.usedWords?.length ?? 0,
     });
 
     console.log("[lastletter-debug] message:", {
@@ -136,6 +144,7 @@ async function handleLastLetterMessage(message) {
 
     const lastChar = word[word.length - 1];
     const pointsEmoji = getPointsEmoji(word.length);
+    const pointsValue = getPointsValue(word);
 
     // React to the *message* — do NOT delete it
     try {
@@ -149,7 +158,7 @@ async function handleLastLetterMessage(message) {
     const newCurrentStreak = (state.currentStreak || 0) + 1;
     const newBestStreak = Math.max(state.bestStreak || 0, newCurrentStreak);
 
-    // Update DB state
+    // 🔢 Update the persistent state (game config + streaks + used words)
     await prisma.lastLetterState.update({
       where: { guildId },
       data: {
@@ -163,16 +172,41 @@ async function handleLastLetterMessage(message) {
       },
     });
 
+    // 🏆 Update the leaderboard scores in LastLetterScore
+    try {
+      await prisma.lastLetterScore.upsert({
+        where: {
+          guildId_userId: {
+            guildId,
+            userId: message.author.id,
+          },
+        },
+        update: {
+          score: {
+            increment: pointsValue,
+          },
+        },
+        create: {
+          guildId,
+          userId: message.author.id,
+          score: pointsValue,
+        },
+      });
+    } catch (err) {
+      console.error("[lastletter] score upsert error:", err);
+    }
+
     // Remember who played last for this channel (for the "no double turn" rule)
     lastPlayerByChannel.set(key, message.author.id);
 
-    console.log("[lastletter-debug] updated state:", {
+    console.log("[lastletter-debug] updated state + score:", {
       guildId,
       channelId,
       lastWord: word,
       lastLetter: lastChar,
       currentStreak: newCurrentStreak,
       bestStreak: newBestStreak,
+      pointsGained: pointsValue,
       lastPlayerId: message.author.id,
     });
   } catch (err) {
