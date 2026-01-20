@@ -2,166 +2,210 @@
 const { addXpForUser } = require("./handler");
 
 // ============================
-// VOICE XP CONFIG
+// CONFIG
 // ============================
 
-// Minimum session length to get XP (in ms)
-const MIN_SESSION_MS = 60_000; // 1 minute
+// XP per full minute in voice
+const VOICE_XP_PER_MINUTE = 4;
 
-// XP per full minute of valid voice time
-const XP_PER_MINUTE = 4;
+// Minimum session length to award XP (seconds)
+const MIN_SESSION_SECONDS = 60;
 
-// Maximum minutes counted per single session (anti-afk farm)
-const MAX_SESSION_MINUTES = 120; // 2 hours
+// Hard cap on countable minutes from one session
+const MAX_SESSION_MINUTES = 120;
 
-// Require at least this many non-bot members in the channel
-const MIN_MEMBERS_FOR_XP = 2;
-
-// In-memory active voice sessions: key = `${guildId}:${userId}`
-const activeSessions = new Map();
+// Active VC sessions keyed by "guildId:userId"
+const activeVoiceSessions = new Map();
 
 /**
- * Check if a given VoiceState is eligible for XP.
- * - Must be in a voice channel
- * - Not muted/deafened (self or server)
+ * Build a unique key for a voice session.
  */
-function isRewardableState(state) {
-  if (!state) return false;
-  if (!state.channelId) return false;
-
-  if (state.selfMute || state.selfDeaf) return false;
-  if (state.serverMute || state.serverDeaf) return false;
-
-  return true;
+function makeSessionKey(guildId, userId) {
+  return `${guildId}:${userId}`;
 }
 
 /**
- * Payout XP for a finished voice session.
+ * Payout XP for a stored voice session, then remove it.
  */
-async function payoutForSession(
-  client,
-  guildId,
-  userId,
-  joinedAt,
-  leftAt,
-  channelId,
-) {
+async function payoutForSession(sessionKey, client) {
+  const session = activeVoiceSessions.get(sessionKey);
+  if (!session) return;
+
+  const { guildId, userId, joinedAt, channelId } = session;
+
+  if (!guildId || !userId || !joinedAt) {
+    console.warn("[leveling] payoutForSession missing data:", {
+      guildId,
+      userId,
+      joinedAt,
+      channelId,
+    });
+    activeVoiceSessions.delete(sessionKey);
+    return;
+  }
+
+  const now = Date.now();
+  const elapsedSeconds = Math.floor((now - joinedAt.getTime()) / 1000);
+
+  if (elapsedSeconds < MIN_SESSION_SECONDS) {
+    console.log("[leveling] voice session too short, no XP:", {
+      guildId,
+      userId,
+      elapsedSeconds,
+    });
+    activeVoiceSessions.delete(sessionKey);
+    return;
+  }
+
+  const minutes = Math.min(
+    Math.floor(elapsedSeconds / 60),
+    MAX_SESSION_MINUTES,
+  );
+
+  // Basic anti-AFK: if they were self-muted (or server muted) when we stored the session,
+  // you could choose to zero out XP. For now, we just log it.
+  if (session.selfMuted || session.selfDeafened || session.serverMuted) {
+    console.log(
+      "[leveling] voice session muted/deafened, still awarding XP but logged:",
+      {
+        guildId,
+        userId,
+        minutes,
+        selfMuted: session.selfMuted,
+        selfDeafened: session.selfDeafened,
+        serverMuted: session.serverMuted,
+      },
+    );
+  }
+
+  const amount = minutes * VOICE_XP_PER_MINUTE;
+
   try {
-    if (!joinedAt || !leftAt) return;
+    console.log("[leveling] payoutForSession awarding voice XP:", {
+      guildId,
+      userId,
+      minutes,
+      amount,
+    });
 
-    const durationMs = leftAt.getTime() - joinedAt.getTime();
-    if (durationMs < MIN_SESSION_MS) {
-      return; // too short, ignore
-    }
-
-    const minutesRaw = Math.floor(durationMs / 60_000);
-    const minutes = Math.min(minutesRaw, MAX_SESSION_MINUTES);
-
-    // Make sure channel still exists & count real humans
-    const channel =
-      client.channels.cache.get(channelId) ||
-      (await client.channels.fetch(channelId).catch(() => null));
-
-    if (!channel || !channel.isVoiceBased()) return;
-
-    let eligibleCount = 0;
-    for (const member of channel.members.values()) {
-      if (member.user.bot) continue;
-      if (
-        member.voice.selfDeaf ||
-        member.voice.selfMute ||
-        member.voice.serverDeaf ||
-        member.voice.serverMute
-      ) {
-        continue;
-      }
-      eligibleCount++;
-    }
-
-    // Require at least MIN_MEMBERS_FOR_XP humans
-    if (eligibleCount < MIN_MEMBERS_FOR_XP) {
-      return;
-    }
-
-    const xpAmount = minutes * XP_PER_MINUTE;
-
-    await addXpForUser(guildId, userId, xpAmount, client);
+    await addXpForUser({
+      guildId,
+      userId,
+      amount,
+      client,
+      source: "voice",
+    });
   } catch (err) {
     console.error("[leveling] payoutForSession error:", err);
+  } finally {
+    activeVoiceSessions.delete(sessionKey);
   }
 }
 
 /**
- * Main voice leveling handler – wired to voiceStateUpdate event.
+ * Main handler hooked from src/events/voiceStateUpdate.js
  */
 async function handleVoiceStateUpdate(oldState, newState) {
   try {
-    const client = newState.client || oldState.client;
-    const guild = newState.guild || oldState.guild;
-    if (!client || !guild) return;
+    const member = newState.member ?? oldState.member;
+    if (!member) return;
+    if (member.user.bot) return;
 
-    const guildId = guild.id;
-    const userId = newState.id || oldState.id;
+    const guildId = newState.guild?.id ?? oldState.guild?.id;
+    const userId = member.id;
 
-    const member = newState.member || oldState.member;
-    if (member?.user?.bot) return;
-
-    const key = `${guildId}:${userId}`;
-    const now = new Date();
-
-    const oldRewardable = isRewardableState(oldState);
-    const newRewardable = isRewardableState(newState);
-
-    const hadSession = activeSessions.has(key);
-
-    // 🔹 CASE 1: Start of a rewardable session
-    if (!hadSession && newRewardable) {
-      activeSessions.set(key, {
-        joinedAt: now,
-        channelId: newState.channelId,
+    if (!guildId || !userId) {
+      console.warn("[leveling] voice update missing guildId/userId:", {
+        guildId,
+        userId,
       });
       return;
     }
 
-    // 🔹 CASE 2: End or transition of a rewardable session
-    if (hadSession) {
-      const session = activeSessions.get(key);
+    const oldChannelId = oldState.channelId;
+    const newChannelId = newState.channelId;
+    const sessionKey = makeSessionKey(guildId, userId);
 
-      const channelIdBefore = oldState.channelId;
-      const channelIdAfter = newState.channelId;
+    // Helpful debug
+    // console.log("[leveling] voice update:", {
+    //   guildId,
+    //   userId,
+    //   oldChannelId,
+    //   newChannelId,
+    // });
 
-      const channelChanged = channelIdBefore !== channelIdAfter;
-
-      // If user left / became non-rewardable / changed channels,
-      // we close the previous session and optionally start a new one.
-      if (!newRewardable || channelChanged) {
-        activeSessions.delete(key);
-
-        const payoutChannelId = channelIdBefore || channelIdAfter;
-        if (payoutChannelId) {
-          await payoutForSession(
-            client,
-            guildId,
-            userId,
-            session.joinedAt,
-            now,
-            payoutChannelId,
-          );
-        }
-
-        // If they are still rewardable in a new channel, start a fresh session
-        if (newRewardable && channelIdAfter) {
-          activeSessions.set(key, {
-            joinedAt: now,
-            channelId: channelIdAfter,
-          });
-        }
-
-        return;
-      }
+    // 1) User left VC entirely
+    if (oldChannelId && !newChannelId) {
+      console.log(
+        "[leveling] voice: user left VC, paying out if any session exists:",
+        {
+          guildId,
+          userId,
+          oldChannelId,
+        },
+      );
+      await payoutForSession(sessionKey, newState.client);
+      return;
     }
 
-    // If none of the above, no-op
+    // 2) User joined VC from nothing
+    if (!oldChannelId && newChannelId) {
+      activeVoiceSessions.set(sessionKey, {
+        guildId,
+        userId,
+        channelId: newChannelId,
+        joinedAt: new Date(),
+        selfMuted: newState.selfMute,
+        selfDeafened: newState.selfDeaf,
+        serverMuted: newState.serverMute,
+      });
+
+      console.log("[leveling] voice: session started:", {
+        guildId,
+        userId,
+        channelId: newChannelId,
+      });
+
+      return;
+    }
+
+    // 3) User moved between channels in same guild
+    if (oldChannelId && newChannelId && oldChannelId !== newChannelId) {
+      console.log(
+        "[leveling] voice: moved channels, paying out old + starting new:",
+        {
+          guildId,
+          userId,
+          from: oldChannelId,
+          to: newChannelId,
+        },
+      );
+
+      await payoutForSession(sessionKey, newState.client);
+
+      activeVoiceSessions.set(sessionKey, {
+        guildId,
+        userId,
+        channelId: newChannelId,
+        joinedAt: new Date(),
+        selfMuted: newState.selfMute,
+        selfDeafened: newState.selfDeaf,
+        serverMuted: newState.serverMute,
+      });
+
+      return;
+    }
+
+    // 4) Still in same VC; update mute/deaf flags so we can log accurately
+    if (newChannelId && oldChannelId === newChannelId) {
+      const existing = activeVoiceSessions.get(sessionKey);
+      if (existing) {
+        existing.selfMuted = newState.selfMute;
+        existing.selfDeafened = newState.selfDeaf;
+        existing.serverMuted = newState.serverMute;
+        activeVoiceSessions.set(sessionKey, existing);
+      }
+    }
   } catch (err) {
     console.error("[leveling] handleVoiceStateUpdate error:", err);
   }
