@@ -6,13 +6,7 @@ const { getRequiredXpForLevel } = require("../handler");
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("level")
-    .setDescription("Show your level or another user's level.")
-    .addUserOption((opt) =>
-      opt
-        .setName("user")
-        .setDescription("Whose level do you want to see?")
-        .setRequired(false)
-    ),
+    .setDescription("Show your current level and XP."),
 
   async execute(interaction) {
     try {
@@ -24,71 +18,59 @@ module.exports = {
       }
 
       const guildId = interaction.guild.id;
-      const targetUser =
-        interaction.options.getUser("user") || interaction.user;
+      const userId = interaction.user.id;
 
+      // Get this user's profile for this guild
       const profile = await prisma.levelProfile.findUnique({
         where: {
           guildId_userId: {
             guildId,
-            userId: targetUser.id,
+            userId,
           },
         },
       });
 
       if (!profile) {
         return interaction.reply({
-          content:
-            targetUser.id === interaction.user.id
-              ? "You don't have any XP yet. Start chatting."
-              : `${targetUser.username} doesn't have any XP yet.`,
+          content: "You don't have any XP yet. Start talking your shit 💅",
           ephemeral: true,
         });
       }
 
-      const currentLevel = profile.level;
-      const currentXp = profile.xp;
-      const requiredForNext = getRequiredXpForLevel(currentLevel + 1) || 1;
+      const level = profile.level;
+      const xp = profile.xp;
 
-      // Clamp progress between 0% and 100%
-      const ratio = Math.max(0, Math.min(1, currentXp / requiredForNext));
-      const percent = (ratio * 100).toFixed(1);
-      const xpToNext = Math.max(0, requiredForNext - currentXp);
+      const nextLevel = level + 1;
+      const requiredForNext = getRequiredXpForLevel(nextLevel);
+
+      let progressText = "Max level reached 🔥";
+      let xpLine = `XP: **${xp}**`;
+
+      if (requiredForNext > 0) {
+        const progressPercent = Math.max(
+          0,
+          Math.min(100, Math.round((xp / requiredForNext) * 100)),
+        );
+
+        progressText = `Progress: **${progressPercent}%** — **${requiredForNext - xp} XP** to next level`;
+        xpLine = `XP: **${xp} / ${requiredForNext}**`;
+      }
 
       const embed = new EmbedBuilder()
-        .setAuthor({
-          name: `${targetUser.username}'s Level`,
-          iconURL: targetUser.displayAvatarURL(),
-        })
-        .setColor(0x9b59b6)
-        .addFields(
-          {
-            name: "Level",
-            value: `\`${currentLevel}\``,
-            inline: true,
-          },
-          {
-            name: "XP",
-            value: `\`${currentXp} / ${requiredForNext}\``,
-            inline: true,
-          },
-          {
-            name: "Progress",
-            value: `${percent}% — \`${xpToNext}\` XP to next level`,
-            inline: false,
-          }
+        .setTitle(`📈 Level Stats — ${interaction.user.username}`)
+        .setDescription(
+          [`Level: **${level}**`, xpLine, progressText].join("\n"),
         )
-        .setFooter({
-          text: "XP from chatting. Voice XP coming soon™",
-        })
+        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+        .setColor(0x9b59b6)
         .setTimestamp();
 
       await interaction.reply({ embeds: [embed] });
     } catch (err) {
-      console.error("[level] error:", err);
+      console.error("[level command] error:", err);
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
-          content: "❌ Error running /level.",
+          content: "❌ Error showing your level.",
           ephemeral: true,
         });
       }
