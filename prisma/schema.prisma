@@ -167,10 +167,14 @@ model LevelRole {
   @@id([guildId, roleId])
 }
 model EconomyProfile {
-  guildId      String
-  userId       String
-  balance      Int      @default(0)
-  lastDailyAt  DateTime?
+  id        Int    @id @default(autoincrement())
+  guildId   String
+  userId    String
+  balance   Int    @default(0)
 
-  @@id([guildId, userId])
+  // Add timestamps if you want
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, userId])
 }
