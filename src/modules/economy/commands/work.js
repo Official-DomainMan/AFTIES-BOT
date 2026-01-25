@@ -3,8 +3,8 @@ const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const {
   getOrCreateProfile,
   adjustBalanceWithTransaction,
-  prisma,
 } = require("../economy");
+const { prisma } = require("../../../core/database");
 
 // Cooldown: 30 minutes
 const WORK_COOLDOWN_MS = 30 * 60 * 1000;
@@ -50,6 +50,7 @@ module.exports = {
 
       // Ensure profile exists (creates with 0 balance if needed)
       const profile = await getOrCreateProfile(guildId, userId);
+      void profile; // we don't use it directly but this guarantees it exists
 
       // Check last WORK transaction for cooldown
       const lastWorkTx = await prisma.economyTransaction.findFirst({
@@ -111,16 +112,13 @@ module.exports = {
 
       let reward = 0;
       let description;
-      let outcomeLabel;
 
       if (failed) {
         // 0 reward, no fine
         reward = 0;
-        outcomeLabel = "Failed shift (0 pay)";
         description = `You **${failScenario}**.\n\nYou didn’t earn anything this time, but at least the vibes were free.`;
       } else {
         reward = getRandomInt(WORK_MIN_REWARD, WORK_MAX_REWARD);
-        outcomeLabel = "Paid shift";
         description = `You **${successScenario}**.\n\nYou got paid **${reward}** 🪙 for your troubles.`;
       }
 
