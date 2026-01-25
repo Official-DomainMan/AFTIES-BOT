@@ -167,14 +167,16 @@ model LevelRole {
   @@id([guildId, roleId])
 }
 model EconomyProfile {
-  id        Int    @id @default(autoincrement())
-  guildId   String
-  userId    String
-  balance   Int    @default(0)
+  id          Int      @id @default(autoincrement())
+  guildId     String
+  userId      String
+  balance     Int      @default(0)
 
-  // Add timestamps if you want
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  /// last time they successfully claimed /daily
+  lastDailyAt DateTime?  // <-- this is what your code is using
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([guildId, userId])
 }
