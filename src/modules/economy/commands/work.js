@@ -103,7 +103,6 @@ module.exports = {
       // Decide success or failure
       const failed = Math.random() < FAIL_CHANCE;
 
-      // Some flavored scenarios
       const successScenarios = [
         "ran a messy late-night shift at the AFTIES bar",
         "dealt a blackjack table and upsold shots between hands",
@@ -138,10 +137,10 @@ module.exports = {
         description = `You **${successScenario}**.\n\nYou got paid **${reward}** 🪙 for your troubles.`;
       }
 
-      // Apply reward + log transaction in one place
       let updatedProfile;
 
       if (reward > 0) {
+        // Success: increase balance + log WORK transaction with a note
         updatedProfile = await prisma.$transaction(async (txPrisma) => {
           const newProfile = await txPrisma.economyProfile.update({
             where: {
@@ -160,17 +159,14 @@ module.exports = {
               userId,
               type: "WORK",
               amount: reward,
-              metadataJson: JSON.stringify({
-                success: true,
-                scenario: successScenario,
-              }),
+              note: `WORK success: ${successScenario}`,
             },
           });
 
           return newProfile;
         });
       } else {
-        // Log a 0-amount WORK transaction so /transaction-log still shows the attempt
+        // Failure: 0-amount WORK transaction so it still shows in /transaction-log
         updatedProfile = profile;
 
         await prisma.economyTransaction.create({
@@ -179,10 +175,7 @@ module.exports = {
             userId,
             type: "WORK",
             amount: 0,
-            metadataJson: JSON.stringify({
-              success: false,
-              scenario: failScenario,
-            }),
+            note: `WORK failed: ${failScenario}`,
           },
         });
       }
