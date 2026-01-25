@@ -1,9 +1,5 @@
 // src/modules/economy/commands/work.js
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const {
-  getOrCreateProfile,
-  adjustBalanceWithTransaction,
-} = require("../economy");
 const { prisma } = require("../../../core/database");
 
 // Cooldown: 30 minutes
@@ -30,6 +26,27 @@ function formatMs(ms) {
   return `${minutes}m ${seconds}s`;
 }
 
+// Local helper so we don't depend on ../economy structure
+async function getOrCreateProfile(guildId, userId) {
+  let profile = await prisma.economyProfile.findUnique({
+    where: {
+      guildId_userId: { guildId, userId },
+    },
+  });
+
+  if (!profile) {
+    profile = await prisma.economyProfile.create({
+      data: {
+        guildId,
+        userId,
+        balance: 0,
+      },
+    });
+  }
+
+  return profile;
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("work")
@@ -48,9 +65,8 @@ module.exports = {
       const userId = interaction.user.id;
       const now = new Date();
 
-      // Ensure profile exists (creates with 0 balance if needed)
+      // Ensure profile exists
       const profile = await getOrCreateProfile(guildId, userId);
-      void profile; // we don't use it directly but this guarantees it exists
 
       // Check last WORK transaction for cooldown
       const lastWorkTx = await prisma.economyTransaction.findFirst({
@@ -122,17 +138,54 @@ module.exports = {
         description = `You **${successScenario}**.\n\nYou got paid **${reward}** 🪙 for your troubles.`;
       }
 
-      // Log + apply reward (0 or positive) via transaction system
-      const updatedProfile = await adjustBalanceWithTransaction(
-        guildId,
-        userId,
-        reward,
-        "WORK",
-        {
-          success: !failed,
-          scenario: failed ? failScenario : successScenario,
-        },
-      );
+      // Apply reward + log transaction in one place
+      let updatedProfile;
+
+      if (reward > 0) {
+        updatedProfile = await prisma.$transaction(async (txPrisma) => {
+          const newProfile = await txPrisma.economyProfile.update({
+            where: {
+              guildId_userId: { guildId, userId },
+            },
+            data: {
+              balance: {
+                increment: reward,
+              },
+            },
+          });
+
+          await txPrisma.economyTransaction.create({
+            data: {
+              guildId,
+              userId,
+              type: "WORK",
+              amount: reward,
+              metadataJson: JSON.stringify({
+                success: true,
+                scenario: successScenario,
+              }),
+            },
+          });
+
+          return newProfile;
+        });
+      } else {
+        // Log a 0-amount WORK transaction so /transaction-log still shows the attempt
+        updatedProfile = profile;
+
+        await prisma.economyTransaction.create({
+          data: {
+            guildId,
+            userId,
+            type: "WORK",
+            amount: 0,
+            metadataJson: JSON.stringify({
+              success: false,
+              scenario: failScenario,
+            }),
+          },
+        });
+      }
 
       const embed = new EmbedBuilder()
         .setTitle("💼 Work Summary")
