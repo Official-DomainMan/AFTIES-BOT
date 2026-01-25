@@ -1,31 +1,36 @@
-# Dockerfile for AFTIES BOT with Prisma + ffmpeg
-
-# Use a recent Node image
-FROM node:24-alpine
-
-# Install ffmpeg for DisTube audio
-RUN apk add --no-cache ffmpeg
+# Use a stable Node LTS instead of 24 (better support for native deps)
+FROM node:20-bullseye
 
 # Create app directory
 WORKDIR /app
 
-# Copy package metadata first (better Docker cache)
+# -------- System dependencies --------
+# ffmpeg: for music playback
+# python3 + make + g++: needed for node-gyp to build @discordjs/opus
+RUN apt-get update && \
+    apt-get install -y ffmpeg python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+# -------- Install Node dependencies --------
+# Copy only package files first so Docker can cache this layer
 COPY package*.json ./
 
-# Copy Prisma schema so we can generate the client
+# Copy Prisma schema so generate works
 COPY prisma ./prisma
 
-# Install dependencies (including devDeps so Prisma CLI is available)
+# Install dependencies (including dev deps so Prisma CLI is available)
 RUN npm ci || npm install
 
 # Generate Prisma client inside the container
 RUN npx prisma generate
 
-# Now copy the rest of the source code
+# -------- Copy the rest of your bot code --------
 COPY . .
 
-# Set env for runtime
+# -------- Runtime env --------
 ENV NODE_ENV=production
 
-# Start the bot
-CMD ["node", "index.js"]
+# -------- Start command --------
+# 1) Run pending DB migrations
+# 2) Start the bot
+CMD ["sh", "-c", "npx prisma migrate deploy && node index.js"]
