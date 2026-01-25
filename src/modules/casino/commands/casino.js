@@ -1,11 +1,15 @@
 // src/modules/casino/commands/casino.js
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const { prisma } = require("../../../core/database");
+const {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+} = require("discord.js");
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("casino")
-    .setDescription("View the slutty casino menu, games, and your balance."),
+    .setDescription("Open the AFTIES casino menu."),
 
   async execute(interaction) {
     try {
@@ -16,51 +20,128 @@ module.exports = {
         });
       }
 
-      const guildId = interaction.guild.id;
-      const userId = interaction.user.id;
-
-      // Get or create economy profile
-      const profile = await prisma.economyProfile.upsert({
-        where: {
-          guildId_userId: {
-            guildId,
-            userId,
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId("casino-menu")
+        .setPlaceholder("Pick your poison 🎰")
+        .addOptions(
+          {
+            label: "Blackjack",
+            description: "Play interactive blackjack with Hit / Stand.",
+            value: "blackjack",
+            emoji: "🃏",
           },
-        },
-        update: {},
-        create: {
-          guildId,
-          userId,
-          balance: 0,
-        },
-      });
+          {
+            label: "Slots",
+            description: "Spin the reels and hope for a win.",
+            value: "slots",
+            emoji: "🎰",
+          },
+          {
+            label: "Roulette",
+            description: "Bet on red, black, or numbers.",
+            value: "roulette",
+            emoji: "🎡",
+          },
+          {
+            label: "Daily Reward",
+            description: "Claim your daily coins.",
+            value: "daily",
+            emoji: "📆",
+          },
+          {
+            label: "Balance",
+            description: "Check your casino balance.",
+            value: "balance",
+            emoji: "💰",
+          },
+          {
+            label: "Transaction Log",
+            description: "View your recent casino transactions.",
+            value: "transaction-log",
+            emoji: "📜",
+          },
+        );
 
-      const balance = profile.balance ?? 0;
+      const row = new ActionRowBuilder().addComponents(menu);
 
       const embed = new EmbedBuilder()
-        .setTitle("🎰 AFTIES CASINO LOBBY")
+        .setTitle("🎲 AFTIES Casino")
         .setDescription(
           [
-            `Welcome, <@${userId}>.`,
+            "Welcome to the casino. Pick an option from the menu below:",
             "",
-            `**Your Balance:** \`${balance}\` 💵`,
-            "",
-            "**Available Games**",
-            "🃏 `/blackjack <bet>` — classic 21, slutty edition",
-            "🎰 `/slots <bet>` — spin for chaos",
-            "🎡 `/roulette <bet> <choice>` — red / black / green",
-            "",
-            "**Economy Commands**",
-            "💸 `/daily` — claim your daily stipend",
-            "💳 `/balance` — check your wallet",
-            "📈 `/levels`, `/profile` — flex your grind",
+            "🃏 **Blackjack** — `/blackjack`",
+            "🎰 **Slots** — `/slots`",
+            "🎡 **Roulette** — `/roulette`",
+            "📆 **Daily Reward** — `/daily`",
+            "💰 **Balance** — `/balance`",
+            "📜 **Transaction Log** — `/transaction-log`",
           ].join("\n"),
         )
         .setColor(0x9b59b6)
-        .setFooter({ text: "Gamble responsibly, menace irresponsibly." })
         .setTimestamp();
 
-      await interaction.reply({ embeds: [embed] });
+      const reply = await interaction.reply({
+        embeds: [embed],
+        components: [row],
+        ephemeral: true, // casino menu just for the user
+        fetchReply: true,
+      });
+
+      const collector = reply.createMessageComponentCollector({
+        time: 60_000,
+        filter: (i) =>
+          i.user.id === interaction.user.id && i.customId === "casino-menu",
+      });
+
+      collector.on("collect", async (selectInteraction) => {
+        const choice = selectInteraction.values[0];
+
+        let msg;
+        switch (choice) {
+          case "blackjack":
+            msg = "🃏 Use `/blackjack` to start a blackjack game.";
+            break;
+          case "slots":
+            msg = "🎰 Use `/slots` to spin the slots.";
+            break;
+          case "roulette":
+            msg = "🎡 Use `/roulette` to place your bet.";
+            break;
+          case "daily":
+            msg = "📆 Use `/daily` to claim your daily reward.";
+            break;
+          case "balance":
+            msg = "💰 Use `/balance` to check your casino balance.";
+            break;
+          case "transaction-log":
+            msg =
+              "📜 Use `/transaction-log` to view your recent casino transactions.";
+            break;
+          default:
+            msg = "❔ Unknown option.";
+        }
+
+        await selectInteraction.reply({
+          content: msg,
+          ephemeral: true,
+        });
+      });
+
+      collector.on("end", async () => {
+        try {
+          const msg = await interaction.fetchReply().catch(() => null);
+          if (!msg) return;
+
+          await msg
+            .edit({
+              components: [],
+            })
+            .catch(() => {});
+        } catch {
+          // ignore
+        }
+      });
     } catch (err) {
       console.error("[casino] error:", err);
       if (!interaction.replied && !interaction.deferred) {
