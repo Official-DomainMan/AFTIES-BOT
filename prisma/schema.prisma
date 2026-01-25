@@ -166,3 +166,11 @@ model LevelRole {
 
   @@id([guildId, roleId])
 }
+model EconomyProfile {
+  guildId      String
+  userId       String
+  balance      Int      @default(0)
+  lastDailyAt  DateTime?
+
+  @@id([guildId, userId])
+}
