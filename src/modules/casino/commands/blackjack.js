@@ -1,44 +1,34 @@
 // src/modules/casino/commands/blackjack.js
-const {
-  SlashCommandBuilder,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-} = require("discord.js");
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { prisma } = require("../../../core/database");
 
-// ---------- Card helpers ----------
-
-const SUITS = ["♠", "♥", "♦", "♣"];
+// Card definitions using emojis as "pictures"
+const SUITS = ["♠️", "♥️", "♦️", "♣️"];
 const RANKS = [
-  { label: "A", value: 11 },
-  { label: "2", value: 2 },
-  { label: "3", value: 3 },
-  { label: "4", value: 4 },
-  { label: "5", value: 5 },
-  { label: "6", value: 6 },
-  { label: "7", value: 7 },
-  { label: "8", value: 8 },
-  { label: "9", value: 9 },
-  { label: "10", value: 10 },
-  { label: "J", value: 10 },
-  { label: "Q", value: 10 },
-  { label: "K", value: 10 },
+  "A",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "J",
+  "Q",
+  "K",
 ];
 
-function createDeck() {
+// Build and shuffle deck
+function buildDeck() {
   const deck = [];
   for (const suit of SUITS) {
     for (const rank of RANKS) {
-      deck.push({
-        label: `${rank.label}${suit}`,
-        value: rank.value,
-        isAce: rank.label === "A",
-      });
+      deck.push({ rank, suit });
     }
   }
-  // shuffle
+  // Fisher-Yates shuffle
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -46,64 +36,64 @@ function createDeck() {
   return deck;
 }
 
-function drawCard(deck) {
-  return deck.pop();
+// Convert card to emoji-ish string
+function cardToString(card) {
+  return `${card.rank}${card.suit}`;
 }
 
-function calculateHandValue(hand) {
+// Calculate hand total with Ace logic
+function handValue(hand) {
   let total = 0;
   let aces = 0;
 
   for (const card of hand) {
-    total += card.value;
-    if (card.isAce) aces++;
+    if (card.rank === "A") {
+      total += 11;
+      aces += 1;
+    } else if (["K", "Q", "J"].includes(card.rank)) {
+      total += 10;
+    } else {
+      total += Number(card.rank);
+    }
   }
 
-  // Downgrade Aces from 11 to 1 if we bust
+  // Downgrade Aces from 11 to 1 if needed
   while (total > 21 && aces > 0) {
     total -= 10;
-    aces--;
+    aces -= 1;
   }
 
   return total;
 }
 
-function formatHand(hand) {
-  return hand.map((c) => `\`${c.label}\``).join(" ");
-}
-
-// Economy helpers (local to avoid relying on earlier helpers)
-async function getOrCreateWallet(guildId, userId) {
-  const profile = await prisma.economyProfile.upsert({
-    where: { guildId_userId: { guildId, userId } },
-    update: {},
-    create: {
-      guildId,
-      userId,
-      balance: 0,
+async function getOrCreateProfile(guildId, userId) {
+  let profile = await prisma.economyProfile.findUnique({
+    where: {
+      guildId_userId: { guildId, userId },
     },
   });
-  return profile;
-}
 
-async function adjustBalance(guildId, userId, amount) {
-  const profile = await prisma.economyProfile.update({
-    where: { guildId_userId: { guildId, userId } },
-    data: {
-      balance: { increment: amount },
-    },
-  });
+  if (!profile) {
+    profile = await prisma.economyProfile.create({
+      data: {
+        guildId,
+        userId,
+        balance: 0,
+      },
+    });
+  }
+
   return profile;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("blackjack")
-    .setDescription("Play blackjack in the AFTIES casino.")
-    .addIntegerOption((opt) =>
-      opt
+    .setDescription("Play a round of blackjack.")
+    .addIntegerOption((option) =>
+      option
         .setName("bet")
-        .setDescription("How much to bet.")
+        .setDescription("How much do you want to bet?")
         .setRequired(true)
         .setMinValue(1),
     ),
@@ -117,206 +107,131 @@ module.exports = {
         });
       }
 
-      const bet = interaction.options.getInteger("bet", true);
       const guildId = interaction.guild.id;
       const userId = interaction.user.id;
+      const bet = interaction.options.getInteger("bet", true);
 
-      // Economy checks
-      let wallet = await getOrCreateWallet(guildId, userId);
-      if (wallet.balance < bet) {
+      // Ensure econ profile & balance
+      let profile = await getOrCreateProfile(guildId, userId);
+      if (profile.balance < bet) {
         return interaction.reply({
-          content: `❌ You don't have enough coins to bet \`${bet}\`. Your balance is \`${wallet.balance}\`.`,
+          content: "You don't have enough coins for that bet.",
           ephemeral: true,
         });
       }
 
-      // Take the bet up-front
-      wallet = await adjustBalance(guildId, userId, -bet);
+      // Build game state
+      const deck = buildDeck();
+      const playerHand = [deck.pop(), deck.pop()];
+      const dealerHand = [deck.pop(), deck.pop()];
 
-      const deck = createDeck();
-      const playerHand = [drawCard(deck), drawCard(deck)];
-      const dealerHand = [drawCard(deck), drawCard(deck)];
+      let playerTotal = handValue(playerHand);
+      let dealerTotal = handValue(dealerHand);
 
-      let playerValue = calculateHandValue(playerHand);
-      let dealerValue = calculateHandValue(dealerHand);
-
-      let gameOver = false;
-      let resultText = null;
-      let netChange = -bet; // default assume loss until proven otherwise
-
-      const hitButton = new ButtonBuilder()
-        .setCustomId("bj_hit")
-        .setLabel("Hit")
-        .setStyle(ButtonStyle.Primary);
-
-      const standButton = new ButtonBuilder()
-        .setCustomId("bj_stand")
-        .setLabel("Stand")
-        .setStyle(ButtonStyle.Secondary);
-
-      function makeRow(disabled = false) {
-        return new ActionRowBuilder().addComponents(
-          hitButton.setDisabled(disabled),
-          standButton.setDisabled(disabled),
-        );
+      // Very simple auto-play:
+      // - Player "hits" until 16 or more
+      // - Dealer hits until 17 or more
+      while (playerTotal < 16) {
+        playerHand.push(deck.pop());
+        playerTotal = handValue(playerHand);
       }
 
-      function makeEmbed(showDealerHole = false) {
-        const dealerShownCards = showDealerHole
-          ? formatHand(dealerHand)
-          : `${dealerHand[0] ? `\`${dealerHand[0].label}\`` : "?"} \`??\``;
-
-        const dealerShownValue = showDealerHole ? dealerValue : "??";
-
-        const embed = new EmbedBuilder()
-          .setTitle("🃏 Blackjack")
-          .setColor(0x2c3e50)
-          .setDescription(
-            [
-              `**Bet:** \`${bet}\`  •  **Balance:** \`${wallet.balance}\``,
-              "",
-              `**Dealer**: ${dealerShownCards}`,
-              `Value: \`${dealerShownValue}\``,
-              "",
-              `**You**: ${formatHand(playerHand)}`,
-              `Value: \`${playerValue}\``,
-            ].join("\n"),
-          )
-          .setFooter({ text: "AFTIES Casino — Hit or Stand." })
-          .setTimestamp();
-
-        if (gameOver && resultText) {
-          embed.addFields({
-            name: "Result",
-            value: resultText,
-          });
+      if (playerTotal <= 21) {
+        while (dealerTotal < 17) {
+          dealerHand.push(deck.pop());
+          dealerTotal = handValue(dealerHand);
         }
-
-        return embed;
       }
 
-      // Immediate blackjack check
-      const initialPlayerBJ = playerValue === 21;
-      const initialDealerBJ = dealerValue === 21;
+      let resultText;
+      let delta = 0;
+      let txType = null;
 
-      if (initialPlayerBJ || initialDealerBJ) {
-        // Reveal dealer hand
-        gameOver = true;
+      if (playerTotal > 21) {
+        // Player bust
+        resultText = `💀 You bust with **${playerTotal}**. Dealer wins.`;
+        delta = -bet;
+        txType = "BLACKJACK_LOSS";
+      } else if (dealerTotal > 21) {
+        resultText = `😈 Dealer busts with **${dealerTotal}**. You win!`;
+        delta = bet; // net +bet
+        txType = "BLACKJACK_WIN";
+      } else if (playerTotal > dealerTotal) {
+        resultText = `✅ You win with **${playerTotal}** vs dealer's **${dealerTotal}**.`;
+        delta = bet;
+        txType = "BLACKJACK_WIN";
+      } else if (dealerTotal > playerTotal) {
+        resultText = `❌ Dealer wins with **${dealerTotal}** vs your **${playerTotal}**.`;
+        delta = -bet;
+        txType = "BLACKJACK_LOSS";
+      } else {
+        resultText = `🤝 Push. You both have **${playerTotal}**. No coins change hands.`;
+        delta = 0;
+      }
 
-        if (initialPlayerBJ && !initialDealerBJ) {
-          // Pay 2.5x (net +1.5x)
-          const payout = Math.floor(bet * 2.5);
-          wallet = await adjustBalance(guildId, userId, payout);
-          netChange = payout - bet;
-          resultText = `🖤 **Blackjack!** You win \`${payout}\` (net +\`${netChange}\`). New balance: \`${wallet.balance}\`.`;
-        } else if (!initialPlayerBJ && initialDealerBJ) {
-          // Lose, we already took bet
-          resultText = `💀 Dealer has blackjack. You lose your bet of \`${bet}\`. New balance: \`${wallet.balance}\`.`;
-        } else {
-          // Both blackjack -> push
-          wallet = await adjustBalance(guildId, userId, bet);
-          netChange = 0;
-          resultText = `⚖️ Both you and the dealer have blackjack. It's a push. Your bet of \`${bet}\` is returned. Balance: \`${wallet.balance}\`.`;
-        }
+      // Apply balance + log transaction (if delta != 0)
+      if (delta !== 0) {
+        profile = await prisma.economyProfile.update({
+          where: {
+            guildId_userId: { guildId, userId },
+          },
+          data: {
+            balance: {
+              increment: delta,
+            },
+          },
+        });
 
-        return interaction.reply({
-          embeds: [makeEmbed(true)],
-          components: [makeRow(true)],
+        await prisma.economyTransaction.create({
+          data: {
+            guildId,
+            userId,
+            type: txType,
+            amount: delta,
+            note: `Blackjack bet ${bet}`,
+          },
+        });
+      } else {
+        // Refresh profile to show correct balance
+        profile = await prisma.economyProfile.findUnique({
+          where: {
+            guildId_userId: { guildId, userId },
+          },
         });
       }
 
-      // Send initial message and set up buttons
-      const reply = await interaction.reply({
-        embeds: [makeEmbed(false)],
-        components: [makeRow(false)],
-        fetchReply: true,
-      });
+      const playerCards = playerHand.map(cardToString).join("  ");
+      const dealerCards = dealerHand.map(cardToString).join("  ");
 
-      const collector = reply.createMessageComponentCollector({
-        time: 60_000,
-        filter: (i) => i.user.id === userId,
-      });
+      const embed = new EmbedBuilder()
+        .setTitle("🃏 Blackjack")
+        .setDescription(resultText)
+        .addFields(
+          {
+            name: "Your Hand",
+            value: `${playerCards}\n**Total:** ${playerTotal}`,
+            inline: false,
+          },
+          {
+            name: "Dealer's Hand",
+            value: `${dealerCards}\n**Total:** ${dealerTotal}`,
+            inline: false,
+          },
+          {
+            name: "Bet",
+            value: `${bet} coins`,
+            inline: true,
+          },
+          {
+            name: "New Balance",
+            value: `${profile.balance} coins`,
+            inline: true,
+          },
+        )
+        .setColor(0x1abc9c)
+        .setTimestamp();
 
-      collector.on("collect", async (i) => {
-        try {
-          if (i.customId === "bj_hit") {
-            playerHand.push(drawCard(deck));
-            playerValue = calculateHandValue(playerHand);
-
-            if (playerValue > 21) {
-              // Bust
-              gameOver = true;
-              resultText = `💥 You bust with \`${playerValue}\`. You lose your bet of \`${bet}\`. New balance: \`${wallet.balance}\`.`;
-              collector.stop("bust");
-              await i.update({
-                embeds: [makeEmbed(true)],
-                components: [makeRow(true)],
-              });
-              return;
-            }
-
-            // Still alive, update hand
-            await i.update({
-              embeds: [makeEmbed(false)],
-              components: [makeRow(false)],
-            });
-          } else if (i.customId === "bj_stand") {
-            // Dealer draws until 17+
-            while (dealerValue < 17) {
-              dealerHand.push(drawCard(deck));
-              dealerValue = calculateHandValue(dealerHand);
-            }
-
-            gameOver = true;
-
-            if (dealerValue > 21 || playerValue > dealerValue) {
-              // Player win (non-blackjack)
-              const payout = bet * 2; // original bet + winnings
-              wallet = await adjustBalance(guildId, userId, payout);
-              netChange = bet;
-              resultText = `✅ You win! Your \`${playerValue}\` beats dealer's \`${dealerValue}\`. You receive \`${payout}\` (net +\`${netChange}\`). New balance: \`${wallet.balance}\`.`;
-            } else if (dealerValue === playerValue) {
-              // Push
-              wallet = await adjustBalance(guildId, userId, bet);
-              netChange = 0;
-              resultText = `⚖️ Push. Both you and the dealer have \`${playerValue}\`. Your bet of \`${bet}\` is returned. Balance: \`${wallet.balance}\`.`;
-            } else {
-              // Dealer win
-              resultText = `❌ Dealer wins with \`${dealerValue}\` vs your \`${playerValue}\`. You lose your bet of \`${bet}\`. Balance: \`${wallet.balance}\`.`;
-            }
-
-            collector.stop("stand");
-            await i.update({
-              embeds: [makeEmbed(true)],
-              components: [makeRow(true)],
-            });
-          }
-        } catch (err) {
-          console.error("[blackjack] collector error:", err);
-          if (!i.replied && !i.deferred) {
-            await i.reply({
-              content: "❌ Something went wrong with the blackjack game.",
-              ephemeral: true,
-            });
-          }
-        }
-      });
-
-      collector.on("end", async (collected, reason) => {
-        if (gameOver) return;
-        // Time out – mark as expired but do NOT refund (house wins on AFK)
-        gameOver = true;
-        resultText = `⌛ Game timed out. You forfeited your bet of \`${bet}\`. Balance: \`${wallet.balance}\`.`;
-
-        try {
-          await reply.edit({
-            embeds: [makeEmbed(true)],
-            components: [makeRow(true)],
-          });
-        } catch {
-          // ignore edit errors
-        }
-      });
+      await interaction.reply({ embeds: [embed] });
     } catch (err) {
       console.error("[blackjack] error:", err);
       if (!interaction.replied && !interaction.deferred) {

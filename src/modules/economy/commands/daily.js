@@ -1,25 +1,14 @@
 // src/modules/economy/commands/daily.js
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const { claimDaily } = require("../economy");
+const { prisma } = require("../../../core/database");
 
-function formatRemaining(ms) {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  const parts = [];
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0) parts.push(`${minutes}m`);
-  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
-
-  return parts.join(" ");
-}
+const DAILY_AMOUNT = 500;
+const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("daily")
-    .setDescription("Claim your daily coins for the casino."),
+    .setDescription("Claim your daily casino allowance."),
 
   async execute(interaction) {
     try {
@@ -32,31 +21,97 @@ module.exports = {
 
       const guildId = interaction.guild.id;
       const userId = interaction.user.id;
+      const now = new Date();
 
-      const result = await claimDaily(guildId, userId);
+      // 🔍 find last DAILY transaction for cooldown
+      const lastDaily = await prisma.economyTransaction.findFirst({
+        where: {
+          guildId,
+          userId,
+          type: "DAILY",
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      });
 
-      if (!result.success) {
-        const remaining = formatRemaining(result.remainingMs);
-        const embed = new EmbedBuilder()
-          .setTitle("⏰ Daily already claimed")
-          .setDescription(
-            `You’ve already grabbed your daily today.\n\nCome back in **${remaining}**.`,
-          )
-          .setColor(0xe67e22);
+      if (lastDaily) {
+        const diff = now.getTime() - new Date(lastDaily.createdAt).getTime();
+        if (diff < DAILY_COOLDOWN_MS) {
+          const remainingMs = DAILY_COOLDOWN_MS - diff;
+          const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+          const minutes = Math.floor(
+            (remainingMs % (60 * 60 * 1000)) / (60 * 1000),
+          );
 
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+          return interaction.reply({
+            content: `⏳ You already claimed your daily. Come back in **${hours}h ${minutes}m**.`,
+            ephemeral: true,
+          });
+        }
       }
 
+      // 💰 award + log transaction atomically
+      const profile = await prisma.$transaction(async (tx) => {
+        // ensure profile exists
+        let econ = await tx.economyProfile.findUnique({
+          where: {
+            guildId_userId: {
+              guildId,
+              userId,
+            },
+          },
+        });
+
+        if (!econ) {
+          econ = await tx.economyProfile.create({
+            data: {
+              guildId,
+              userId,
+              balance: 0,
+            },
+          });
+        }
+
+        // update balance
+        const updated = await tx.economyProfile.update({
+          where: {
+            guildId_userId: {
+              guildId,
+              userId,
+            },
+          },
+          data: {
+            balance: {
+              increment: DAILY_AMOUNT,
+            },
+          },
+        });
+
+        // log transaction
+        await tx.economyTransaction.create({
+          data: {
+            guildId,
+            userId,
+            type: "DAILY",
+            amount: DAILY_AMOUNT,
+            note: "Daily claim",
+          },
+        });
+
+        return updated;
+      });
+
       const embed = new EmbedBuilder()
-        .setTitle("💸 Daily Reward")
+        .setTitle("🎁 Daily Claimed")
         .setDescription(
-          `You claimed **${result.amount.toLocaleString()}** coins.\n\nNew balance: **${result.newBalance.toLocaleString()}**`,
+          `You received **${DAILY_AMOUNT}** coins.\n` +
+            `Your new balance is **${profile.balance}**.`,
         )
-        .setColor(0x2ecc71)
-        .setFooter({ text: "Go lose it all in blackjack, king. ♠️" })
+        .setColor(0x3498db)
         .setTimestamp();
 
-      await interaction.reply({ embeds: [embed], ephemeral: false });
+      await interaction.reply({ embeds: [embed], ephemeral: true });
     } catch (err) {
       console.error("[daily] error:", err);
       if (!interaction.replied && !interaction.deferred) {

@@ -2,32 +2,29 @@
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { prisma } = require("../../../core/database");
 
-const SYMBOLS = ["🍒", "🍋", "🍇", "🔔", "⭐", "💎", "7️⃣"];
+const SYMBOLS = ["🍒", "🍋", "🍇", "💎", "7️⃣", "🍀"];
 
-async function getOrCreateWallet(guildId, userId) {
-  const profile = await prisma.economyProfile.upsert({
-    where: { guildId_userId: { guildId, userId } },
-    update: {},
-    create: {
-      guildId,
-      userId,
-      balance: 0,
+async function getOrCreateProfile(guildId, userId) {
+  let profile = await prisma.economyProfile.findUnique({
+    where: {
+      guildId_userId: { guildId, userId },
     },
   });
+
+  if (!profile) {
+    profile = await prisma.economyProfile.create({
+      data: {
+        guildId,
+        userId,
+        balance: 0,
+      },
+    });
+  }
+
   return profile;
 }
 
-async function adjustBalance(guildId, userId, amount) {
-  const profile = await prisma.economyProfile.update({
-    where: { guildId_userId: { guildId, userId } },
-    data: {
-      balance: { increment: amount },
-    },
-  });
-  return profile;
-}
-
-function spin() {
+function spinReels() {
   return [
     SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
     SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
@@ -35,14 +32,38 @@ function spin() {
   ];
 }
 
+function computePayout(bet, reels) {
+  const [a, b, c] = reels;
+
+  // 3 of a kind
+  if (a === b && b === c) {
+    if (a === "7️⃣") {
+      // big win
+      return bet * 3; // net +3*bet
+    }
+    if (a === "💎") {
+      return bet * 2; // net +2*bet
+    }
+    return bet * 2; // net +2*bet for other triple
+  }
+
+  // 2 of a kind -> push (no change)
+  if (a === b || a === c || b === c) {
+    return 0;
+  }
+
+  // no match: lose bet
+  return -bet;
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("slots")
-    .setDescription("Spin the AFTIES slut slots.")
-    .addIntegerOption((opt) =>
-      opt
+    .setDescription("Spin the slots.")
+    .addIntegerOption((option) =>
+      option
         .setName("bet")
-        .setDescription("How much to bet.")
+        .setDescription("How much do you want to bet?")
         .setRequired(true)
         .setMinValue(1),
     ),
@@ -56,72 +77,73 @@ module.exports = {
         });
       }
 
-      const bet = interaction.options.getInteger("bet", true);
       const guildId = interaction.guild.id;
       const userId = interaction.user.id;
+      const bet = interaction.options.getInteger("bet", true);
 
-      let wallet = await getOrCreateWallet(guildId, userId);
-      if (wallet.balance < bet) {
+      let profile = await getOrCreateProfile(guildId, userId);
+
+      if (profile.balance < bet) {
         return interaction.reply({
-          content: `❌ You don't have enough coins to bet \`${bet}\`. Your balance is \`${wallet.balance}\`.`,
+          content: "You don't have enough coins for that bet.",
           ephemeral: true,
         });
       }
 
-      // Take bet
-      wallet = await adjustBalance(guildId, userId, -bet);
+      const reels = spinReels();
+      const delta = computePayout(bet, reels);
 
-      const result = spin();
-      const [a, b, c] = result;
+      let resultText;
+      let txType = null;
 
-      let payout = 0;
-      let title = "🎰 Slots";
-      let flavor = "";
-
-      if (a === b && b === c) {
-        // Three of a kind
-        // Slightly different payouts for rare symbol "7️⃣" or "💎"
-        if (a === "7️⃣") {
-          payout = bet * 15;
-          flavor = "JACKPOT 7️⃣7️⃣7️⃣!";
-        } else if (a === "💎") {
-          payout = bet * 10;
-          flavor = "💎 Triple diamonds, you bougie menace.";
-        } else {
-          payout = bet * 6;
-          flavor = "Triple match! House is pissed.";
-        }
-      } else if (a === b || a === c || b === c) {
-        // Two of a kind
-        payout = Math.floor(bet * 1.5);
-        flavor = "Nice lil two-of-a-kind.";
+      if (delta > 0) {
+        resultText = `🎉 You **win** \`${delta}\` coins!`;
+        txType = "SLOTS_WIN";
+      } else if (delta < 0) {
+        resultText = `💸 You **lose** \`${Math.abs(delta)}\` coins.`;
+        txType = "SLOTS_LOSS";
       } else {
-        payout = 0;
-        flavor = "L + ratio + the house eats.";
+        resultText = "😶 It's a push. No coins change hands.";
       }
 
-      let netChange = -bet;
-      if (payout > 0) {
-        wallet = await adjustBalance(guildId, userId, payout);
-        netChange = payout - bet;
+      if (delta !== 0) {
+        profile = await prisma.economyProfile.update({
+          where: {
+            guildId_userId: { guildId, userId },
+          },
+          data: {
+            balance: {
+              increment: delta,
+            },
+          },
+        });
+
+        await prisma.economyTransaction.create({
+          data: {
+            guildId,
+            userId,
+            type: txType,
+            amount: delta,
+            note: `Slots bet ${bet} | ${reels.join(" ")}`,
+          },
+        });
+      } else {
+        profile = await prisma.economyProfile.findUnique({
+          where: {
+            guildId_userId: { guildId, userId },
+          },
+        });
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setColor(payout > 0 ? 0x2ecc71 : 0xe74c3c)
+        .setTitle("🎰 Slots")
         .setDescription(
-          [
-            `**Result:** \`${result.join(" | ")}\``,
-            "",
-            flavor,
-            "",
-            `**Bet:** \`${bet}\``,
-            `**Payout:** \`${payout}\``,
-            `**Net:** \`${netChange >= 0 ? "+" : ""}${netChange}\``,
-            `**Balance:** \`${wallet.balance}\``,
-          ].join("\n"),
+          `**Result:** ${reels.join("  ")}\n\n` +
+            `${resultText}\n\n` +
+            `**Bet:** ${bet} coins\n` +
+            `**New Balance:** ${profile.balance} coins`,
         )
-        .setFooter({ text: "AFTIES Slots — rigged but cute." })
+        .setColor(0xe67e22)
         .setTimestamp();
 
       await interaction.reply({ embeds: [embed] });

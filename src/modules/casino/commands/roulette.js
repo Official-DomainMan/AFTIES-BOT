@@ -2,60 +2,75 @@
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { prisma } = require("../../../core/database");
 
-async function getOrCreateWallet(guildId, userId) {
-  const profile = await prisma.economyProfile.upsert({
-    where: { guildId_userId: { guildId, userId } },
-    update: {},
-    create: {
-      guildId,
-      userId,
-      balance: 0,
+async function getOrCreateProfile(guildId, userId) {
+  let profile = await prisma.economyProfile.findUnique({
+    where: {
+      guildId_userId: { guildId, userId },
     },
   });
+
+  if (!profile) {
+    profile = await prisma.economyProfile.create({
+      data: {
+        guildId,
+        userId,
+        balance: 0,
+      },
+    });
+  }
+
   return profile;
 }
 
-async function adjustBalance(guildId, userId, amount) {
-  const profile = await prisma.economyProfile.update({
-    where: { guildId_userId: { guildId, userId } },
-    data: {
-      balance: { increment: amount },
-    },
-  });
-  return profile;
-}
-
+// Very simple color model:
+// 0 = green
+// even = black, odd = red
 function spinWheel() {
-  // Return number 0-36 + inferred color
-  const n = Math.floor(Math.random() * 37); // 0 to 36
+  const number = Math.floor(Math.random() * 37); // 0..36
   let color;
-  if (n === 0) color = "green";
-  else if (n % 2 === 0) color = "red";
-  else color = "black";
+  if (number === 0) {
+    color = "green";
+  } else if (number % 2 === 0) {
+    color = "black";
+  } else {
+    color = "red";
+  }
+  return { number, color };
+}
 
-  return { number: n, color };
+function computeRouletteDelta(bet, guessColor, spinColor) {
+  if (guessColor === spinColor) {
+    if (guessColor === "green") {
+      // Big payout for green
+      return bet * 14; // net +14*bet
+    }
+    // red/black 1:1
+    return bet;
+  }
+  // lose bet
+  return -bet;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("roulette")
-    .setDescription("Spin the wheel (red/black/green).")
-    .addIntegerOption((opt) =>
-      opt
+    .setDescription("Bet on red, black, or green.")
+    .addIntegerOption((option) =>
+      option
         .setName("bet")
-        .setDescription("How much to bet.")
+        .setDescription("How much do you want to bet?")
         .setRequired(true)
         .setMinValue(1),
     )
-    .addStringOption((opt) =>
-      opt
-        .setName("choice")
-        .setDescription("Bet on a color.")
+    .addStringOption((option) =>
+      option
+        .setName("color")
+        .setDescription("Which color do you want to bet on?")
         .setRequired(true)
         .addChoices(
-          { name: "Red (2x)", value: "red" },
-          { name: "Black (2x)", value: "black" },
-          { name: "Green (14x)", value: "green" },
+          { name: "Red", value: "red" },
+          { name: "Black", value: "black" },
+          { name: "Green (0)", value: "green" },
         ),
     ),
 
@@ -68,63 +83,81 @@ module.exports = {
         });
       }
 
-      const bet = interaction.options.getInteger("bet", true);
-      const choice = interaction.options.getString("choice", true); // red/black/green
       const guildId = interaction.guild.id;
       const userId = interaction.user.id;
+      const bet = interaction.options.getInteger("bet", true);
+      const guessColor = interaction.options.getString("color", true); // red / black / green
 
-      let wallet = await getOrCreateWallet(guildId, userId);
-      if (wallet.balance < bet) {
+      let profile = await getOrCreateProfile(guildId, userId);
+
+      if (profile.balance < bet) {
         return interaction.reply({
-          content: `❌ You don't have enough coins to bet \`${bet}\`. Your balance is \`${wallet.balance}\`.`,
+          content: "You don't have enough coins for that bet.",
           ephemeral: true,
         });
       }
 
-      // Take bet
-      wallet = await adjustBalance(guildId, userId, -bet);
+      const spin = spinWheel();
+      const delta = computeRouletteDelta(bet, guessColor, spin.color);
 
-      const { number, color } = spinWheel();
+      let resultText;
+      let txType = null;
 
-      let payout = 0;
-      let netChange = -bet;
-      let flavor = "";
-
-      if (choice === color) {
-        if (color === "green") {
-          payout = bet * 14;
-          flavor = "💚 You hit **GREEN**. Disgusting luck.";
-        } else {
-          payout = bet * 2; // standard color win
-          flavor = `✅ You guessed **${color.toUpperCase()}** right.`;
-        }
-        wallet = await adjustBalance(guildId, userId, payout);
-        netChange = payout - bet;
+      if (delta > 0) {
+        resultText = `🎉 You **win** \`${delta}\` coins!`;
+        txType = "ROULETTE_WIN";
+      } else if (delta < 0) {
+        resultText = `💸 You **lose** \`${Math.abs(delta)}\` coins.`;
+        txType = "ROULETTE_LOSS";
       } else {
-        flavor = `❌ You picked **${choice.toUpperCase()}**, wheel landed on **${color.toUpperCase()}**.`;
+        resultText = "😶 It's a push. No coins change hands.";
+      }
+
+      if (delta !== 0) {
+        profile = await prisma.economyProfile.update({
+          where: {
+            guildId_userId: { guildId, userId },
+          },
+          data: {
+            balance: {
+              increment: delta,
+            },
+          },
+        });
+
+        await prisma.economyTransaction.create({
+          data: {
+            guildId,
+            userId,
+            type: txType,
+            amount: delta,
+            note: `Roulette bet ${bet} on ${guessColor}`,
+          },
+        });
+      } else {
+        profile = await prisma.economyProfile.findUnique({
+          where: {
+            guildId_userId: { guildId, userId },
+          },
+        });
       }
 
       const colorEmoji =
-        color === "red" ? "🔴" : color === "black" ? "⚫" : "🟢";
+        spin.color === "red" ? "🔴" : spin.color === "black" ? "⚫" : "🟢";
+
+      const guessEmoji =
+        guessColor === "red" ? "🔴" : guessColor === "black" ? "⚫" : "🟢";
 
       const embed = new EmbedBuilder()
         .setTitle("🎡 Roulette")
-        .setColor(
-          color === "green" ? 0x2ecc71 : color === "red" ? 0xe74c3c : 0x000000,
-        )
         .setDescription(
-          [
-            `**Wheel:** ${colorEmoji} Number \`${number}\` (${color.toUpperCase()})`,
-            "",
-            flavor,
-            "",
-            `**Bet:** \`${bet}\` on \`${choice.toUpperCase()}\``,
-            `**Payout:** \`${payout}\``,
-            `**Net:** \`${netChange >= 0 ? "+" : ""}${netChange}\``,
-            `**Balance:** \`${wallet.balance}\``,
-          ].join("\n"),
+          `**You bet:** ${guessEmoji} \`${guessColor.toUpperCase()}\`\n` +
+            `**Spin result:** ${colorEmoji} \`${spin.color.toUpperCase()}\` — **${spin.number}**\n\n` +
+            `${resultText}\n\n` +
+            `**Bet:** ${bet} coins\n` +
+            `**New Balance:** ${profile.balance} coins`,
         )
-        .setFooter({ text: "AFTIES Roulette — may the odds clown you." })
+        .setColor(0xc0392b)
         .setTimestamp();
 
       await interaction.reply({ embeds: [embed] });

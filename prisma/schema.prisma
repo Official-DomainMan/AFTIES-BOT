@@ -180,3 +180,23 @@ model EconomyProfile {
 
   @@unique([guildId, userId])
 }
+
+model EconomyTransaction {
+  id        String   @id @default(cuid())
+  guildId   String
+  userId    String
+
+  /// DAILY, PAY_SENT, PAY_RECEIVED, BLACKJACK_WIN, BLACKJACK_LOSS,
+  /// SLOTS_WIN, SLOTS_LOSS, ROULETTE_WIN, ROULETTE_LOSS, etc.
+  type      String
+
+  /// Positive = credit, negative = debit
+  amount    Int
+
+  /// Optional description (e.g. "To @User", "Blackjack hand", etc.)
+  note      String?
+
+  createdAt DateTime @default(now())
+
+  @@index([guildId, userId, createdAt])
+}
