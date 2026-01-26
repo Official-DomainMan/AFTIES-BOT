@@ -1,92 +1,123 @@
 // src/modules/games/counting/handler.js
 const { prisma } = require("../../../core/database");
 
-async function softWarn(channel, text) {
+/**
+ * Handle a counting message in the configured counting channel.
+ * - Only works if there's a CountingState row for this guild+channel.
+ * - Requires the next correct integer.
+ * - DOES NOT allow the same user to count twice in a row.
+ * - Deletes bad messages and leaves state untouched.
+ */
+async function handleCountingMessage(message) {
   try {
-    const msg = await channel.send(text);
-    setTimeout(() => msg.delete().catch(() => {}), 5000);
-  } catch {
-    // ignore
-  }
-}
+    if (!message.guild) return; // ignore DMs
+    if (message.author.bot) return; // ignore bots
 
-async function handleCounting(message) {
-  if (message.author.bot) return;
-  if (!message.guild) return;
+    const guildId = message.guild.id;
+    const channelId = message.channel.id;
+    const authorId = message.author.id;
 
-  const state = await prisma.countingState.findUnique({
-    where: { guildId: message.guild.id },
-  });
+    // Look up counting state for THIS channel.
+    const state = await prisma.countingState.findUnique({
+      where: {
+        guildId_channelId: {
+          guildId,
+          channelId,
+        },
+      },
+    });
 
-  if (!state) return;
-  if (message.channel.id !== state.channelId) return;
-
-  const content = message.content.trim();
-
-  // Debug: log state + message
-  console.log("[counting-debug] state:", {
-    guildId: state.guildId,
-    channelId: state.channelId,
-    current: state.current,
-    lastUserId: state.lastUserId,
-  });
-  console.log("[counting-debug] message:", {
-    authorId: message.author.id,
-    content,
-  });
-
-  const nextNumber = state.current + 1;
-
-  async function fail(reasonText) {
-    try {
-      await message.react("❌").catch(() => {});
-    } catch {
-      // ignore
+    // If this channel is not configured for counting, bail.
+    if (!state) {
+      // console.debug("[counting][DEBUG] no state for channel, ignoring");
+      return;
     }
 
-    setTimeout(() => {
-      message.delete().catch(() => {});
-    }, 3000);
+    // Basic debug if you want:
+    // console.debug("[counting-debug] state:", state);
+    // console.debug("[counting-debug] message:", {
+    //   authorId,
+    //   content: message.content,
+    // });
 
-    await softWarn(message.channel, reasonText);
+    // Require a pure integer in the message
+    const raw = message.content.trim();
+    const num = Number(raw);
+
+    // Not an integer? Just delete and bail.
+    if (!Number.isInteger(num)) {
+      try {
+        await message.delete().catch(() => {});
+      } catch {}
+      return;
+    }
+
+    const expected = state.current + 1;
+
+    // RULE 1: No double counts by same user
+    if (state.lastUserId && state.lastUserId === authorId) {
+      // Same user as last valid counter – reject.
+      // Optionally react then delete so it's clear
+      try {
+        await message.react("❌").catch(() => {});
+      } catch {}
+
+      try {
+        await message.delete().catch(() => {});
+      } catch {}
+
+      // console.debug("[counting-debug] rejected (same user twice in a row)");
+      return;
+    }
+
+    // RULE 2: Must be exactly +1
+    if (num !== expected) {
+      // Wrong number – delete and do NOT change the state.
+      try {
+        await message.react("❌").catch(() => {});
+      } catch {}
+
+      try {
+        await message.delete().catch(() => {});
+      } catch {}
+
+      // console.debug("[counting-debug] rejected (expected", expected, "got", num, ")");
+      return;
+    }
+
+    // At this point, message is valid.
+    const newCurrent = num;
+
+    const updated = await prisma.countingState.update({
+      where: {
+        guildId_channelId: {
+          guildId,
+          channelId,
+        },
+      },
+      data: {
+        current: newCurrent,
+        lastUserId: authorId,
+      },
+    });
+
+    // console.debug("[counting-debug] accepted:", {
+    //   num,
+    //   newCurrent: updated.current,
+    //   userId: authorId,
+    // });
+
+    // Optional ✅ reaction on success
+    try {
+      await message.react("✅").catch(() => {});
+    } catch {
+      // ignore reaction errors
+    }
+  } catch (err) {
+    console.error("[messageCreate:counting] error:", err);
   }
-
-  // Only allow pure integers
-  if (!/^\d+$/.test(content)) {
-    await fail(`❌ Numbers only. Next number is **${nextNumber}**.`);
-    console.log("[counting-debug] reject: non-numeric");
-    return;
-  }
-
-  const num = parseInt(content, 10);
-  const expected = nextNumber;
-
-  if (num !== expected) {
-    await fail(`❌ Wrong number. Next number is **${expected}**.`);
-    console.log("[counting-debug] reject: wrong number", { num, expected });
-    return;
-  }
-
-  // ✅ Correct number
-  try {
-    await message.react("✅").catch(() => {});
-  } catch {
-    // ignore
-  }
-
-  await prisma.countingState.update({
-    where: { guildId: message.guild.id },
-    data: {
-      current: num,
-      lastUserId: message.author.id, // kept for future rules/leaderboard
-    },
-  });
-
-  console.log("[counting-debug] accepted:", {
-    num,
-    newCurrent: num,
-    userId: message.author.id,
-  });
 }
 
-module.exports = { handleCounting };
+module.exports = {
+  handleCountingMessage,
+};
