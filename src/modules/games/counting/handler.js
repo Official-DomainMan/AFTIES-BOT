@@ -18,12 +18,11 @@ async function handleCountingMessage(message) {
     const authorId = message.author.id;
 
     // Look up counting state for THIS channel.
-    const state = await prisma.countingState.findUnique({
+    // Using findFirst because the model does NOT have a composite unique key.
+    const state = await prisma.countingState.findFirst({
       where: {
-        guildId_channelId: {
-          guildId,
-          channelId,
-        },
+        guildId,
+        channelId,
       },
     });
 
@@ -48,7 +47,9 @@ async function handleCountingMessage(message) {
     if (!Number.isInteger(num)) {
       try {
         await message.delete().catch(() => {});
-      } catch {}
+      } catch {
+        // ignore
+      }
       return;
     }
 
@@ -56,8 +57,6 @@ async function handleCountingMessage(message) {
 
     // RULE 1: No double counts by same user
     if (state.lastUserId && state.lastUserId === authorId) {
-      // Same user as last valid counter – reject.
-      // Optionally react then delete so it's clear
       try {
         await message.react("❌").catch(() => {});
       } catch {}
@@ -72,7 +71,6 @@ async function handleCountingMessage(message) {
 
     // RULE 2: Must be exactly +1
     if (num !== expected) {
-      // Wrong number – delete and do NOT change the state.
       try {
         await message.react("❌").catch(() => {});
       } catch {}
@@ -81,19 +79,18 @@ async function handleCountingMessage(message) {
         await message.delete().catch(() => {});
       } catch {}
 
-      // console.debug("[counting-debug] rejected (expected", expected, "got", num, ")");
+      // console.debug(`[counting-debug] rejected (expected ${expected}, got ${num})`);
       return;
     }
 
     // At this point, message is valid.
     const newCurrent = num;
 
-    const updated = await prisma.countingState.update({
+    // Use updateMany keyed by guildId + channelId
+    await prisma.countingState.updateMany({
       where: {
-        guildId_channelId: {
-          guildId,
-          channelId,
-        },
+        guildId,
+        channelId,
       },
       data: {
         current: newCurrent,
@@ -103,7 +100,7 @@ async function handleCountingMessage(message) {
 
     // console.debug("[counting-debug] accepted:", {
     //   num,
-    //   newCurrent: updated.current,
+    //   newCurrent,
     //   userId: authorId,
     // });
 
