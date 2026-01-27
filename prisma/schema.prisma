@@ -166,6 +166,13 @@ model LevelRole {
 
   @@id([guildId, roleId])
 }
+model LevelSettings {
+  guildId          String  @id
+  levelUpChannelId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
 model EconomyProfile {
   id          Int      @id @default(autoincrement())
   guildId     String
