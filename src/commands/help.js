@@ -14,73 +14,63 @@ module.exports = {
 
   async execute(interaction) {
     try {
+      const client = interaction.client;
+      const guild = interaction.guild;
       const user = interaction.user;
 
-      // --- Page content (staying true to your original text) ---
-
-      const pageDescriptions = [
-        // PAGE 1: Core & Casino
-        {
-          title: "📖 AFTIES BOT — Help (1/3)",
-          description: [
-            `Welcome, ${user}. Here’s what I can do in this server.`,
-            "",
-            "**⚙️ Core & Utility**",
-            "• **/botinfo** — Show info about AFTIES and where it's running",
-            "• **/help** — Show AFTIES BOT commands and what they do",
-            "• **/ping** — Check bot latency",
-            "",
-            "**🎰 Casino Games**",
-            "• **/blackjack** — Play interactive blackjack with the casino balance.",
-            "• **/casino** — Open the AFTIES Casino lobby.",
-            "• **/roulette** — Bet on red, black, or green.",
-            "• **/slots** — Spin the slots.",
-          ].join("\n"),
-        },
-
-        // PAGE 2: Economy
-        {
-          title: "📖 AFTIES BOT — Help (2/3)",
-          description: [
-            "**💸 Economy**",
-            "• **/balance** — Check your casino balance.",
-            "• **/daily** — Claim your daily casino allowance.",
-            "• **/pay** — Gift casino balance to another user.",
-            "• **/transaction-log** — View your recent casino transactions.",
-            "• **/work** — Clock in, do a risky job, maybe get paid.",
-          ].join("\n"),
-        },
-
-        // PAGE 3: Leveling + Fun
-        {
-          title: "📖 AFTIES BOT — Help (3/3)",
-          description: [
-            "**📈 Leveling**",
-            "• **/level** — Show your current level and XP.",
-            "• **/rank** — Show your level & XP, or someone else's.",
-            "• **/profile** — Show your leveling stats (or someone else's).",
-            "• **/levels** — Show the top leveled users in this server.",
-            "• **/levelroles** — Configure automatic level-up role rewards.",
-            "• **/levelup-channel** — Set or clear the channel for level-up announcements.",
-            "• **/levelreset** — Reset all leveling data for this server.",
-            "",
-            "**🍑 Fun**",
-            "• **/slutball** — Ask the Slutball a question and get a filthy answer.",
-            "",
-            "_For Reddit commands, use **/reddit-help** to see the full Reddit menu._",
-          ].join("\n"),
-        },
-      ];
-
-      const pages = pageDescriptions.map((p) =>
-        new EmbedBuilder()
-          .setTitle(p.title)
-          .setDescription(p.description)
-          .setFooter({
-            text: "Gamble responsibly, menace irresponsibly.",
-          })
-          .setTimestamp(),
+      // Pull all slash commands from the client's command collection
+      const commands = Array.from(client.commands?.values?.() || []).filter(
+        (cmd) => cmd.data && typeof cmd.data.name === "string",
       );
+
+      if (!commands.length) {
+        return interaction.reply({
+          content: "❌ I don't have any commands registered right now.",
+          ephemeral: true,
+        });
+      }
+
+      // Sort commands alphabetically
+      commands.sort((a, b) =>
+        a.data.name.localeCompare(b.data.name, undefined, {
+          sensitivity: "base",
+        }),
+      );
+
+      // Map to display lines like: • **/ping** — Check bot latency
+      const lines = commands.map((cmd) => {
+        const name = cmd.data.name;
+        const desc =
+          cmd.data.description && cmd.data.description.length
+            ? cmd.data.description
+            : "No description provided.";
+        return `• **/${name}** — ${desc}`;
+      });
+
+      // Paginate lines into chunks to stay far under embed limits
+      const pageSize = 10; // commands per page
+      const pages = [];
+      for (let i = 0; i < lines.length; i += pageSize) {
+        const chunk = lines.slice(i, i + pageSize);
+        const pageIndex = pages.length;
+        const totalPages = Math.ceil(lines.length / pageSize) || 1;
+
+        const embed = new EmbedBuilder()
+          .setTitle(`📖 AFTIES BOT — Help (${pageIndex + 1}/${totalPages})`)
+          .setDescription(
+            [
+              `Hello, ${user}. Here are the available commands:`,
+              "",
+              chunk.join("\n"),
+            ].join("\n"),
+          )
+          .setFooter({
+            text: `Serving ${guild ? guild.name : "this server"}`,
+          })
+          .setTimestamp();
+
+        pages.push(embed);
+      }
 
       let currentPage = 0;
 
@@ -98,12 +88,14 @@ module.exports = {
             .setDisabled(currentPage === pages.length - 1),
         );
 
-      // Send the initial, PUBLIC help message (not ephemeral)
+      // Public help message (not ephemeral)
       const message = await interaction.reply({
         embeds: [pages[currentPage]],
-        components: [getRow()],
+        components: pages.length > 1 ? [getRow()] : [],
         fetchReply: true,
       });
+
+      if (pages.length === 1) return; // no need for pagination
 
       const filter = (i) =>
         i.user.id === user.id &&
@@ -112,7 +104,7 @@ module.exports = {
 
       const collector = message.createMessageComponentCollector({
         filter,
-        time: 60_000, // 60 seconds of paging
+        time: 60_000, // 60 seconds of interaction window
       });
 
       collector.on("collect", async (i) => {
