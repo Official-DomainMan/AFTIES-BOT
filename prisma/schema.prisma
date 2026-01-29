@@ -207,3 +207,26 @@ model EconomyTransaction {
 
   @@index([guildId, userId, createdAt])
 }
+model TicketSettings {
+  guildId       String   @id
+  categoryId    String?
+  supportRoleId String?
+  logChannelId  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+model Ticket {
+  id           String   @id @default(cuid())
+  guildId      String
+  channelId    String   @unique
+  ownerId      String
+  isOpen       Boolean  @default(true)
+  claimedById  String?
+  closeReason  String?
+  createdAt    DateTime @default(now())
+  closedAt     DateTime?
+
+  @@index([guildId, ownerId])
+  @@index([guildId, isOpen])
+  @@unique([guildId, ownerId, isOpen])
+}
