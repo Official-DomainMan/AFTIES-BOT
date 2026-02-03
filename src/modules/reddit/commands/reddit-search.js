@@ -1,83 +1,50 @@
-// src/modules/reddit/commands/reddit-search.js
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { searchPosts, normalizeSubreddit } = require("../fetcher");
 
-function buildSearchUrl(query, subreddit, sort) {
-  const params = new URLSearchParams();
-  params.set("q", query);
-  params.set("limit", "50");
-  params.set("type", "link");
-  params.set("sort", sort || "relevance");
-
-  if (subreddit) {
-    // restrict to subreddit
-    params.set("restrict_sr", "1");
-    return `https://www.reddit.com/r/${encodeURIComponent(
-      subreddit,
-    )}/search.json?${params.toString()}`;
-  }
-
-  // global search
-  return `https://www.reddit.com/search.json?${params.toString()}`;
+function pickListingPosts(listing) {
+  const children = listing?.data?.children || [];
+  return children.map((c) => c.data).filter(Boolean);
 }
 
-function getImageFromPost(data) {
-  const url = data.url_overridden_by_dest || data.url || "";
-  if (
-    url.endsWith(".jpg") ||
-    url.endsWith(".jpeg") ||
-    url.endsWith(".png") ||
-    url.endsWith(".gif")
-  ) {
-    return url;
-  }
-
-  if (data.preview && data.preview.images && data.preview.images[0]) {
-    const source = data.preview.images[0].source;
-    if (source && source.url) return source.url.replace(/&amp;/g, "&");
-  }
-
-  return null;
+function isLikelyImageUrl(url) {
+  if (!url) return false;
+  return /\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(url);
 }
 
-function buildEmbedFromPost(post, query, subreddit) {
-  const sub = post.subreddit || subreddit || "unknown";
-  const url = `https://reddit.com${post.permalink}`;
-  const imageUrl = getImageFromPost(post);
+function buildPostEmbed(post, { titlePrefix = "🔎 Reddit — Search" } = {}) {
+  const title = post.title?.slice(0, 256) || "Untitled";
+  const url = `https://www.reddit.com${post.permalink}`;
+  const subreddit = post.subreddit_name_prefixed || `r/${post.subreddit}`;
+  const author = post.author ? `u/${post.author}` : "unknown";
+  const upvotes = post.ups ?? 0;
+  const comments = post.num_comments ?? 0;
 
   const embed = new EmbedBuilder()
-    .setTitle(post.title?.slice(0, 256) || "Reddit Search Result")
+    .setTitle(title)
     .setURL(url)
-    .setColor(0x00aeff)
-    .setFooter({
-      text: `r/${sub} • u/${post.author || "unknown"} • 👍 ${
-        post.ups ?? 0
-      } • 💬 ${post.num_comments ?? 0}`,
-    })
-    .setTimestamp(
-      post.created_utc ? new Date(post.created_utc * 1000) : new Date(),
-    );
+    .setColor(0x3498db)
+    .setAuthor({ name: `${titlePrefix} • ${subreddit}` })
+    .setDescription(
+      post.selftext
+        ? post.selftext.slice(0, 600) + (post.selftext.length > 600 ? "…" : "")
+        : "",
+    )
+    .addFields(
+      { name: "Author", value: author, inline: true },
+      { name: "Upvotes", value: String(upvotes), inline: true },
+      { name: "Comments", value: String(comments), inline: true },
+    )
+    .setFooter({ text: "Source: Reddit" })
+    .setTimestamp();
 
-  const descParts = [];
-  if (query) descParts.push(`Search: \`${query}\``);
-  if (subreddit) descParts.push(`Subreddit: r/${subreddit}`);
+  const img =
+    post.preview?.images?.[0]?.source?.url?.replaceAll("&amp;", "&") ||
+    (isLikelyImageUrl(post.url_overridden_by_dest)
+      ? post.url_overridden_by_dest
+      : null) ||
+    null;
 
-  const infoLine = descParts.length ? descParts.join(" • ") : null;
-
-  if (post.selftext && post.selftext.trim().length > 0) {
-    let body =
-      post.selftext.length > 1600
-        ? post.selftext.slice(0, 1600) + "…"
-        : post.selftext;
-    if (infoLine) body = infoLine + "\n\n" + body;
-    embed.setDescription(body);
-  } else if (infoLine) {
-    embed.setDescription(infoLine);
-  }
-
-  if (imageUrl) {
-    embed.setImage(imageUrl);
-  }
-
+  if (img) embed.setImage(img);
   return embed;
 }
 
@@ -85,138 +52,84 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName("reddit-search")
     .setDescription("Search Reddit posts by keyword.")
-    .addStringOption((option) =>
-      option
+    .addStringOption((opt) =>
+      opt
         .setName("query")
         .setDescription("Search query / keywords")
         .setRequired(true),
     )
-    .addStringOption((option) =>
-      option
+    .addStringOption((opt) =>
+      opt
         .setName("subreddit")
         .setDescription(
           "Optional subreddit (without r/); search all if omitted",
         )
         .setRequired(false),
     )
-    .addStringOption((option) =>
-      option
+    .addStringOption((opt) =>
+      opt
         .setName("sort")
         .setDescription("Sort order")
-        .setRequired(false)
         .addChoices(
           { name: "relevance", value: "relevance" },
           { name: "hot", value: "hot" },
           { name: "top", value: "top" },
           { name: "new", value: "new" },
           { name: "comments", value: "comments" },
-        ),
+        )
+        .setRequired(false),
     )
-    .addIntegerOption((option) =>
-      option
+    .addIntegerOption((opt) =>
+      opt
         .setName("count")
         .setDescription("How many results (1–5). Default: 3")
-        .setRequired(false)
         .setMinValue(1)
-        .setMaxValue(5),
+        .setMaxValue(5)
+        .setRequired(false),
     ),
 
   async execute(interaction) {
     try {
-      if (!interaction.guild) {
-        return interaction.reply({
-          content: "This command only works in servers.",
-          ephemeral: true,
-        });
-      }
+      await interaction.deferReply();
 
-      const query = interaction.options.getString("query", true).trim();
-      let subreddit = interaction.options.getString("subreddit");
+      const query = interaction.options.getString("query", true);
+      const subredditRaw = interaction.options.getString("subreddit");
       const sort = interaction.options.getString("sort") || "relevance";
       const count = interaction.options.getInteger("count") || 3;
 
-      if (!query) {
-        return interaction.reply({
-          content: "❌ Please provide a non-empty search query.",
-          ephemeral: true,
-        });
-      }
+      const subreddit = subredditRaw ? normalizeSubreddit(subredditRaw) : null;
 
-      if (subreddit) {
-        subreddit = subreddit.replace(/^r\//i, "").trim();
-        if (!subreddit) subreddit = null;
-      }
-
-      await interaction.deferReply();
-
-      const url = buildSearchUrl(query, subreddit, sort);
-      let json;
-
-      try {
-        const res = await fetch(url, {
-          headers: {
-            "User-Agent": "AFTIES-BOT/1.0 (Discord bot)",
-          },
-        });
-
-        if (!res.ok) {
-          throw new Error(`Reddit responded with status ${res.status}`);
-        }
-
-        json = await res.json();
-      } catch (err) {
-        console.error("[reddit-search] fetch error:", err);
-        return interaction.editReply({
-          content: `❌ Failed to search Reddit for \`${query}\`${
-            subreddit ? ` in r/${subreddit}` : ""
-          }.`,
-        });
-      }
-
-      if (
-        !json ||
-        !json.data ||
-        !Array.isArray(json.data.children) ||
-        json.data.children.length === 0
-      ) {
-        return interaction.editReply({
-          content: `⚠️ No results found for \`${query}\`${
-            subreddit ? ` in r/${subreddit}` : ""
-          }.`,
-        });
-      }
-
-      // No NSFW filtering; server is already wild
-      const posts = json.data.children
-        .map((c) => c.data)
-        .filter((p) => !p.stickied);
+      const listing = await searchPosts(
+        query,
+        subreddit,
+        sort,
+        Math.max(count, 5),
+      );
+      const posts = pickListingPosts(listing)
+        .filter((p) => !p.stickied)
+        .filter((p) => !p.removed_by_category);
 
       if (!posts.length) {
-        return interaction.editReply({
-          content: `⚠️ Only stickied or unusable posts found for \`${query}\`${
-            subreddit ? ` in r/${subreddit}` : ""
-          }.`,
-        });
+        return interaction.editReply(
+          "No results found. Try different keywords.",
+        );
       }
 
-      const slice = posts.slice(0, count);
-      const embeds = slice.map((post) =>
-        buildEmbedFromPost(post, query, subreddit),
+      const chosen = posts.slice(0, Math.min(count, 5));
+      const embeds = chosen.map((p) =>
+        buildPostEmbed(p, { titlePrefix: "🔎 Reddit — Search" }),
       );
 
-      await interaction.editReply({ embeds });
+      return interaction.editReply({ embeds });
     } catch (err) {
-      console.error("[reddit-search] error:", err);
-      if (interaction.deferred && !interaction.replied) {
-        await interaction.editReply({
-          content: "❌ Error running /reddit-search.",
-        });
-      } else if (!interaction.deferred && !interaction.replied) {
-        await interaction.reply({
-          content: "❌ Error running /reddit-search.",
-          ephemeral: true,
-        });
+      console.error("[reddit-search] fetch error:", err);
+      const msg = String(err?.message || "").includes("status 403")
+        ? "Reddit blocked this request (403). If you’re on Railway, enable OAuth env vars for Reddit to fix it."
+        : "Error fetching Reddit search. Try again in a minute.";
+      if (interaction.deferred || interaction.replied) {
+        return interaction.editReply({ content: `❌ ${msg}` });
       }
+      return interaction.reply({ content: `❌ ${msg}`, ephemeral: true });
     }
   },
 };

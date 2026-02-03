@@ -1,61 +1,50 @@
-// src/modules/reddit/commands/reddit-hot.js
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { getHot, normalizeSubreddit } = require("../fetcher");
 
-function buildRedditUrl(subreddit) {
-  return `https://www.reddit.com/r/${encodeURIComponent(
-    subreddit,
-  )}/hot.json?limit=50`;
+function pickListingPosts(listing) {
+  const children = listing?.data?.children || [];
+  return children.map((c) => c.data).filter(Boolean);
 }
 
-function getImageFromPost(data) {
-  const url = data.url_overridden_by_dest || data.url || "";
-  if (
-    url.endsWith(".jpg") ||
-    url.endsWith(".jpeg") ||
-    url.endsWith(".png") ||
-    url.endsWith(".gif")
-  ) {
-    return url;
-  }
-
-  if (data.preview && data.preview.images && data.preview.images[0]) {
-    const source = data.preview.images[0].source;
-    if (source && source.url) return source.url.replace(/&amp;/g, "&");
-  }
-
-  return null;
+function isLikelyImageUrl(url) {
+  if (!url) return false;
+  return /\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(url);
 }
 
-function buildEmbedFromPost(post, fallbackSubreddit) {
-  const subreddit = post.subreddit || fallbackSubreddit;
-  const url = `https://reddit.com${post.permalink}`;
-  const imageUrl = getImageFromPost(post);
+function buildPostEmbed(post, { titlePrefix = "🔥 Reddit — Hot" } = {}) {
+  const title = post.title?.slice(0, 256) || "Untitled";
+  const url = `https://www.reddit.com${post.permalink}`;
+  const subreddit = post.subreddit_name_prefixed || `r/${post.subreddit}`;
+  const author = post.author ? `u/${post.author}` : "unknown";
+  const upvotes = post.ups ?? 0;
+  const comments = post.num_comments ?? 0;
 
   const embed = new EmbedBuilder()
-    .setTitle(post.title?.slice(0, 256) || "Reddit Post")
+    .setTitle(title)
     .setURL(url)
-    .setColor(0xff4500)
-    .setFooter({
-      text: `r/${subreddit} • 👍 ${post.ups ?? 0} • 💬 ${
-        post.num_comments ?? 0
-      }`,
-    })
-    .setTimestamp(
-      post.created_utc ? new Date(post.created_utc * 1000) : new Date(),
-    );
+    .setColor(0xff8717)
+    .setAuthor({ name: `${titlePrefix} • ${subreddit}` })
+    .setDescription(
+      post.selftext
+        ? post.selftext.slice(0, 600) + (post.selftext.length > 600 ? "…" : "")
+        : "",
+    )
+    .addFields(
+      { name: "Author", value: author, inline: true },
+      { name: "Upvotes", value: String(upvotes), inline: true },
+      { name: "Comments", value: String(comments), inline: true },
+    )
+    .setFooter({ text: "Source: Reddit" })
+    .setTimestamp();
 
-  if (post.selftext && post.selftext.trim().length > 0) {
-    const desc =
-      post.selftext.length > 1800
-        ? post.selftext.slice(0, 1800) + "…"
-        : post.selftext;
-    embed.setDescription(desc);
-  }
+  const img =
+    post.preview?.images?.[0]?.source?.url?.replaceAll("&amp;", "&") ||
+    (isLikelyImageUrl(post.url_overridden_by_dest)
+      ? post.url_overridden_by_dest
+      : null) ||
+    null;
 
-  if (imageUrl) {
-    embed.setImage(imageUrl);
-  }
-
+  if (img) embed.setImage(img);
   return embed;
 }
 
@@ -63,103 +52,55 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName("reddit-hot")
     .setDescription("Show hot posts from a subreddit.")
-    .addStringOption((option) =>
-      option
+    .addStringOption((opt) =>
+      opt
         .setName("subreddit")
         .setDescription("Subreddit (without r/). Default: all")
         .setRequired(false),
     )
-    .addIntegerOption((option) =>
-      option
+    .addIntegerOption((opt) =>
+      opt
         .setName("count")
         .setDescription("How many posts (1–5). Default: 1")
-        .setRequired(false)
         .setMinValue(1)
-        .setMaxValue(5),
+        .setMaxValue(5)
+        .setRequired(false),
     ),
 
   async execute(interaction) {
     try {
-      if (!interaction.guild) {
-        return interaction.reply({
-          content: "This command only works in servers.",
-          ephemeral: true,
-        });
-      }
-
-      const subredditInput = interaction.options.getString("subreddit");
-      const subreddit = (subredditInput || "all").replace(/^r\//i, "");
-      const count = interaction.options.getInteger("count") || 1;
-
       await interaction.deferReply();
 
-      const url = buildRedditUrl(subreddit);
+      const subredditRaw = interaction.options.getString("subreddit") || "all";
+      const count = interaction.options.getInteger("count") || 1;
+      const subreddit = normalizeSubreddit(subredditRaw);
 
-      let json;
-      try {
-        const res = await fetch(url, {
-          headers: {
-            "User-Agent": "AFTIES-BOT/1.0 (Discord bot)",
-          },
-        });
-
-        if (!res.ok) {
-          throw new Error(`Reddit responded with status ${res.status}`);
-        }
-
-        json = await res.json();
-      } catch (err) {
-        console.error("[reddit-hot] fetch error:", err);
-        return interaction.editReply({
-          content: `❌ Failed to fetch posts from r/${subreddit}. The sub may not exist or Reddit is mad at us.`,
-        });
-      }
-
-      if (
-        !json ||
-        !json.data ||
-        !Array.isArray(json.data.children) ||
-        json.data.children.length === 0
-      ) {
-        return interaction.editReply({
-          content: `⚠️ No posts found for r/${subreddit}.`,
-        });
-      }
-
-      const isNsfwChannel = interaction.channel?.nsfw === true;
-
-      const posts = json.data.children
-        .map((c) => c.data)
+      const listing = await getHot(subreddit, 25);
+      const posts = pickListingPosts(listing)
         .filter((p) => !p.stickied)
-        .filter((p) => {
-          if (p.over_18 && !isNsfwChannel) return false;
-          return true;
-        });
+        .filter((p) => !p.removed_by_category);
 
       if (!posts.length) {
-        return interaction.editReply({
-          content: isNsfwChannel
-            ? `⚠️ Couldn’t find any usable hot posts in r/${subreddit}.`
-            : `⚠️ Only NSFW posts found in r/${subreddit}, and this channel isn’t marked NSFW.`,
-        });
+        return interaction.editReply(
+          "No posts found. Try a different subreddit.",
+        );
       }
 
-      const slice = posts.slice(0, count);
-      const embeds = slice.map((post) => buildEmbedFromPost(post, subreddit));
+      const chosen = posts.slice(0, Math.min(count, 5));
+      const embeds = chosen.map((p) =>
+        buildPostEmbed(p, { titlePrefix: "🔥 Reddit — Hot" }),
+      );
 
-      await interaction.editReply({ embeds });
+      return interaction.editReply({ embeds });
     } catch (err) {
-      console.error("[reddit-hot] error:", err);
-      if (interaction.deferred && !interaction.replied) {
-        await interaction.editReply({
-          content: "❌ Error running /reddit-hot.",
-        });
-      } else if (!interaction.deferred && !interaction.replied) {
-        await interaction.reply({
-          content: "❌ Error running /reddit-hot.",
-          ephemeral: true,
-        });
+      console.error("[reddit-hot] fetch error:", err);
+      const msg = String(err?.message || "").includes("status 403")
+        ? "Reddit blocked this request (403). If you’re on Railway, enable OAuth env vars for Reddit to fix it."
+        : "Error fetching Reddit. Try again in a minute.";
+      if (interaction.deferred || interaction.replied) {
+        return interaction.editReply({ content: `❌ ${msg}` });
       }
+      return interaction.reply({ content: `❌ ${msg}`, ephemeral: true });
     }
   },
 };
