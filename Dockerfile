@@ -1,36 +1,35 @@
-# Use a stable Node LTS instead of 24 (better support for native deps)
-FROM node:20-bullseye
+# Use Debian Bookworm (Python 3.11 available) instead of Alpine / older images
+FROM node:22-bookworm-slim
 
-# Create app directory
+# Install system deps:
+# - ffmpeg for audio
+# - python3 (3.11 on bookworm) for yt-dlp
+# - build tools (sometimes needed for native deps)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3 \
+    python3-venv \
+    python3-pip \
+    build-essential \
+    openssl \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Ensure python points to python3 (and python3 is 3.11 here)
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
 WORKDIR /app
 
-# -------- System dependencies --------
-# ffmpeg: for music playback
-# python3 + make + g++: needed for node-gyp to build @discordjs/opus
-RUN apt-get update && \
-    apt-get install -y ffmpeg python3 make g++ && \
-    rm -rf /var/lib/apt/lists/*
-
-# -------- Install Node dependencies --------
-# Copy only package files first so Docker can cache this layer
+# Install deps first for better caching
 COPY package*.json ./
-
-# Copy Prisma schema so generate works
-COPY prisma ./prisma
-
-# Install dependencies (including dev deps so Prisma CLI is available)
 RUN npm ci || npm install
 
-# Generate Prisma client inside the container
-RUN npx prisma generate
-
-# -------- Copy the rest of your bot code --------
+# Copy the rest of your code
 COPY . .
 
-# -------- Runtime env --------
-ENV NODE_ENV=production
+# Prisma client MUST be generated inside the container
+RUN npx prisma generate
 
-# -------- Start command --------
-# 1) Run pending DB migrations
-# 2) Start the bot
+# If you use migrations in Railway, you can do migrate deploy at runtime.
+# If you already do this elsewhere, keep it anyway—safe to run.
 CMD ["sh", "-c", "npx prisma migrate deploy && node index.js"]
