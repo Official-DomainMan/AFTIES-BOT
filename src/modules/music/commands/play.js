@@ -3,28 +3,64 @@ const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 
 function normalizeQuery(input) {
   if (!input) return "";
-  return input
-    .replace(/[’‘]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, "-")
-    .replace(/\u00A0/g, " ")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .trim();
+  return (
+    input
+      // smart quotes/apostrophes -> plain
+      .replace(/[’‘]/g, "'")
+      .replace(/[“”]/g, '"')
+      // long dashes -> hyphen
+      .replace(/[–—]/g, "-")
+      // non-breaking space -> normal
+      .replace(/\u00A0/g, " ")
+      // strip weird invisible chars
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .trim()
+  );
 }
 
-function isUrl(str) {
-  try {
-    // eslint-disable-next-line no-new
-    new URL(str);
-    return true;
-  } catch {
-    return false;
+function isSpotifyUrl(q) {
+  if (!q) return false;
+  return (
+    q.includes("open.spotify.com/") ||
+    q.startsWith("spotify:") ||
+    q.includes("spotify.link/")
+  );
+}
+
+/**
+ * Spotify → YouTube search fallback.
+ * Uses Spotify oEmbed endpoint (no auth required) to get a human title.
+ * Example oEmbed title: "I Don't Know - Slum Village"
+ */
+async function spotifyToSearchQuery(spotifyUrl) {
+  // Spotify "share links" sometimes are spotify.link short URLs.
+  // We can try oEmbed directly with whatever URL we have.
+  const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(
+    spotifyUrl,
+  )}`;
+
+  const res = await fetch(oembedUrl, {
+    headers: {
+      // This helps avoid some edge cases where services dislike blank UA
+      "User-Agent": "AFTIES-BOT/1.0 (Discord bot)",
+      Accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Spotify oEmbed responded with status ${res.status}`);
   }
-}
 
-function truncate(str, max = 1800) {
-  if (!str) return "";
-  return str.length > max ? str.slice(0, max - 3) + "..." : str;
+  const data = await res.json();
+  const title = (data?.title || "").trim();
+
+  if (!title) {
+    throw new Error("Spotify oEmbed returned no title.");
+  }
+
+  // Turn Spotify title into a strong YouTube search query
+  // Add "audio" to bias toward playable uploads
+  return `${title} audio`;
 }
 
 module.exports = {
@@ -39,9 +75,6 @@ module.exports = {
     ),
 
   async execute(interaction) {
-    // Never let this command time out
-    let deferred = false;
-
     try {
       const distube = interaction.client.distube;
       if (!distube) {
@@ -52,24 +85,38 @@ module.exports = {
       }
 
       const raw = interaction.options.getString("query", true);
-      const query = normalizeQuery(raw);
+      let query = normalizeQuery(raw);
 
       // Must be in voice
       const member = interaction.member;
-      const voiceChannel = member?.voice?.channel;
-      if (!voiceChannel) {
+      const voice = member?.voice?.channel;
+      if (!voice) {
         return interaction.reply({
           content: "🔊 Join a voice channel first, then use `/play`.",
           ephemeral: true,
         });
       }
 
-      // Defer so we don't hit the 3s interaction window on slow searches
+      // Defer so we don't time out on slow searches
       await interaction.deferReply();
-      deferred = true;
 
-      // Try to play. DisTube will join + queue.
-      await distube.play(voiceChannel, query, {
+      // Spotify fallback: convert Spotify link → YouTube search
+      let wasSpotify = false;
+      if (isSpotifyUrl(query)) {
+        wasSpotify = true;
+        try {
+          const converted = await spotifyToSearchQuery(query);
+          query = normalizeQuery(converted);
+        } catch (e) {
+          // If Spotify conversion fails, keep original query and let DisTube try
+          console.warn(
+            "[music] Spotify conversion failed, using original:",
+            e?.message,
+          );
+        }
+      }
+
+      await distube.play(voice, query, {
         member,
         textChannel: interaction.channel,
         interaction,
@@ -78,113 +125,69 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setTitle("🎶 Added to queue")
         .setDescription(
-          isUrl(query) ? `**Link:** ${query}` : `**Search:** \`${query}\``,
+          `${wasSpotify ? "✅ Spotify link detected → searching YouTube\n" : ""}` +
+            `**Query:** ${query}`,
         )
-        .setColor(0x2ecc71)
-        .setFooter({
-          text: `Serving ${interaction.guild?.name || "this server"}`,
-        })
-        .setTimestamp();
+        .setColor(0x2ecc71);
 
       return interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error("[music] /play error:", err);
 
       const code = err?.errorCode || err?.code;
-      const msg = truncate(err?.message || "Unknown error.");
+      const msg = err?.message || "Unknown error";
 
-      // DisTube-specific: No results
+      // Known DisTube cases
       if (code === "NO_RESULT") {
         const embed = new EmbedBuilder()
           .setTitle("❌ No results found")
           .setDescription(
-            `I couldn’t find anything for that.\n\n` +
+            `I couldn't find anything for that.\n\n` +
               `**Try:**\n` +
               `• A direct **YouTube link**\n` +
-              `• Add artist + title: \`Slum Village - I Don't Know\`\n` +
-              `• Keep it simple: \`i don't know\`\n\n` +
-              `If **links work** but **search doesn’t**, it’s usually extraction/provider limitations in the hosting environment.`,
-          )
-          .setColor(0xe74c3c)
-          .setFooter({
-            text: `Serving ${interaction.guild?.name || "this server"}`,
-          });
-
-        if (deferred || interaction.deferred || interaction.replied) {
-          return interaction.editReply({ embeds: [embed] });
-        }
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
-
-      // Common “ffmpeg missing”
-      if (msg.toLowerCase().includes("ffmpeg is not installed")) {
-        const embed = new EmbedBuilder()
-          .setTitle("❌ ffmpeg missing")
-          .setDescription(
-            `This host is missing **ffmpeg**, which is required for audio playback.\n\n` +
-              `✅ Fix: ensure your Railway Docker image installs ffmpeg.\n` +
-              `If you already added it, make sure Railway rebuilt from the updated Dockerfile.`,
-          )
-          .setColor(0xe67e22);
-
-        if (deferred || interaction.deferred || interaction.replied) {
-          return interaction.editReply({ embeds: [embed] });
-        }
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
-
-      // Spotify / DRM style failures (yt-dlp / extractor)
-      const lower = msg.toLowerCase();
-      if (
-        lower.includes("[drm]") ||
-        lower.includes("drm protection") ||
-        lower.includes("not supported") ||
-        lower.includes("requested site is known to use drm")
-      ) {
-        const embed = new EmbedBuilder()
-          .setTitle("🚫 Can’t play that source (DRM)")
-          .setDescription(
-            `That link/source is **DRM-protected** (common with Spotify and some providers).\n\n` +
-              `✅ Use:\n` +
-              `• YouTube links\n` +
-              `• YouTube search queries (artist + title)\n\n` +
-              `If you want Spotify support, the usual approach is **Spotify for metadata → play via YouTube search**, not direct playback.`,
+              `• Add artist/title: \`Slum Village - I Don't Know\`\n` +
+              `• Simpler search words (no fancy punctuation)\n`,
           )
           .setColor(0xe74c3c);
 
-        if (deferred || interaction.deferred || interaction.replied) {
-          return interaction.editReply({ embeds: [embed] });
-        }
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.editReply({ embeds: [embed] });
       }
 
-      // Python version issue (yt-dlp runner)
+      // DRM warnings from yt-dlp
       if (
-        lower.includes("unsupported version of python") ||
-        lower.includes("only python versions 3.10 and above")
+        msg.toLowerCase().includes("[drm]") ||
+        msg.toLowerCase().includes("drm")
       ) {
         const embed = new EmbedBuilder()
-          .setTitle("🐍 Python version too old on host")
+          .setTitle("🚫 That source is DRM protected")
           .setDescription(
-            `yt-dlp requires **Python 3.10+** in this environment.\n\n` +
-              `✅ Fix: update your Docker image to install Python 3.10+ (or use a base image that includes it).`,
+            `yt-dlp refuses to extract audio from that link/source.\n\n` +
+              `**Fix:** Use a **YouTube link** or a **plain search** instead.`,
           )
           .setColor(0xe67e22);
 
-        if (deferred || interaction.deferred || interaction.replied) {
-          return interaction.editReply({ embeds: [embed] });
-        }
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.editReply({ embeds: [embed] });
       }
 
-      // Fallback generic error
-      const content = `❌ Error trying to play that:\n\`\`\`\n${msg}\n\`\`\``;
+      // Python version / yt-dlp dependency issues
+      if (msg.toLowerCase().includes("unsupported version of python")) {
+        const embed = new EmbedBuilder()
+          .setTitle("🐍 Python version issue in Railway")
+          .setDescription(
+            `yt-dlp requires **Python 3.10+** in the container.\n` +
+              `Your Railway build is missing it.\n\n` +
+              `**Fix:** Update Dockerfile to install Python 3.11 (we’re doing that now).`,
+          )
+          .setColor(0xf1c40f);
 
-      if (deferred || interaction.deferred || interaction.replied) {
-        return interaction.editReply({ content });
+        return interaction.editReply({ embeds: [embed] });
       }
 
-      return interaction.reply({ content, ephemeral: true });
+      const clipped = String(msg).slice(0, 1800);
+
+      return interaction.editReply({
+        content: `❌ Error trying to play that:\n\`\`\`\n${clipped}\n\`\`\``,
+      });
     }
   },
 };

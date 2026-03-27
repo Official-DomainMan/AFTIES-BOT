@@ -1,41 +1,39 @@
-# Use a Debian base that has modern Python available (Bookworm = Python 3.11)
+# Dockerfile
 FROM node:20-bookworm-slim
 
-# Install system deps:
-# - ffmpeg: audio playback
-# - python3.11: required by yt-dlp
-# - build tools: for native modules if needed
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system deps: ffmpeg for audio, python3.11 for yt-dlp, and build tools
+RUN apt-get update && apt-get install -y \
     ffmpeg \
     python3.11 \
-    python3.11-distutils \
+    python3-pip \
     ca-certificates \
     openssl \
     git \
     build-essential \
-  && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
-# Ensure "python3" points to python3.11 (yt-dlp looks for python3)
+# Ensure python points to python3.11 for node-gyp & yt-dlp environments
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && ln -sf /usr/bin/python3.11 /usr/bin/python
-
-# If anything uses PYTHON env (node-gyp), set it explicitly
-ENV PYTHON=/usr/bin/python3.11
-ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Install deps first for better caching
+# Copy package files first for better Docker layer caching
 COPY package*.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
 
-# Copy the rest of the app
-COPY . .
+# Install dependencies
+RUN npm ci || npm install
 
-# Prisma client generation (important for Railway)
-# If prisma is in devDependencies only, this will fail — in that case,
-# move prisma + @prisma/client to dependencies.
+# Copy Prisma schema early (so generate works even if your app imports prisma at boot)
+COPY prisma ./prisma
+
+# Generate Prisma client inside the container
 RUN npx prisma generate
 
-# Optional but recommended: ensure DB migrations are applied on start
-# If you do not use migrations, you can remove "prisma migrate deploy".
+# Now copy the rest of the app
+COPY . .
+
+# Railway provides PORT sometimes; bot doesn't need to expose it, but harmless
+ENV NODE_ENV=production
+
+# Start: run migrations, then start the bot
 CMD ["sh", "-c", "npx prisma migrate deploy && node index.js"]

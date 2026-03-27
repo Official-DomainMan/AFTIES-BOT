@@ -17,37 +17,52 @@ module.exports = {
       }
 
       const queue = distube.getQueue(interaction.guildId);
+
       if (!queue || !queue.songs || queue.songs.length === 0) {
         return interaction.reply({
-          content: "📭 Queue is empty. Use `/play` to add something.",
+          content: "📭 The queue is empty.",
           ephemeral: true,
         });
       }
 
-      const now = queue.songs[0];
-      const upNext = queue.songs.slice(1, 11);
+      const nowPlaying = queue.songs[0];
+      const upcoming = queue.songs.slice(1, 11);
 
       const embed = new EmbedBuilder()
         .setTitle("🎶 Music Queue")
-        .setDescription(
-          `**Now Playing:** ${now.name} \`${now.formattedDuration}\`\n` +
-            (upNext.length
-              ? `\n**Up Next:**\n${upNext
-                  .map(
-                    (s, i) =>
-                      `**${i + 1}.** ${s.name} \`${s.formattedDuration}\``,
-                  )
-                  .join("\n")}`
-              : "\n**Up Next:** *(nothing)*"),
+        .setColor(0x5865f2)
+        .addFields(
+          {
+            name: "Now Playing",
+            value: `**${nowPlaying.name}** \`${nowPlaying.formattedDuration}\``,
+            inline: false,
+          },
+          {
+            name: "Up Next",
+            value:
+              upcoming.length > 0
+                ? upcoming
+                    .map(
+                      (song, i) =>
+                        `**${i + 1}.** ${song.name} \`${song.formattedDuration}\``,
+                    )
+                    .join("\n")
+                : "_Nothing else queued._",
+            inline: false,
+          },
         )
-        .setColor(0x5865f2);
+        .setFooter({
+          text: `Serving ${interaction.guild?.name || "this server"}`,
+        })
+        .setTimestamp();
 
       return interaction.reply({ embeds: [embed] });
     } catch (err) {
       console.error("[music] /queue error:", err);
+
       if (!interaction.replied && !interaction.deferred) {
         return interaction.reply({
-          content: "❌ Error showing queue.",
+          content: "❌ Error showing the queue.",
           ephemeral: true,
         });
       }
