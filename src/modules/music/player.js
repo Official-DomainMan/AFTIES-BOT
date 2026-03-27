@@ -28,13 +28,16 @@ function initMusic(client) {
 
   // Keep options minimal so newer DisTube versions don't throw INVALID_KEY
   distube = new DisTube(client, {
+    emitNewSongOnly: true,
     plugins: [
       // yt-dlp for YouTube
       new YtDlpPlugin({
-        // Don't auto-update binary (safer on Railway/Windows)
+        // Set true if you want it to self-update inside container
+        // (usually fine if your image has python >= 3.10)
         update: false,
       }),
-      // Basic Spotify support – no extra options
+      // Spotify plugin is OK to keep installed,
+      // but we’ll handle Spotify links in /play by converting to a YouTube search.
       new SpotifyPlugin(),
     ],
   });
@@ -70,14 +73,16 @@ function initMusic(client) {
     })
     .on("error", (channel, error) => {
       console.error("[music] DisTube error:", error);
-      try {
-        if (channel && channel.send) {
-          channel
-            .send("❌ There was an error with the music system.")
-            .catch(() => {});
-        }
-      } catch {
-        // ignore
+
+      // channel can sometimes be a text channel OR the queue's textChannel
+      const text = channel?.send
+        ? channel
+        : distube?.getQueue?.(channel)?.textChannel;
+
+      if (text?.send) {
+        text
+          .send("❌ There was an error with the music system.")
+          .catch(() => {});
       }
     });
 
@@ -85,9 +90,6 @@ function initMusic(client) {
   return distube;
 }
 
-/**
- * Optional getter for modules that want direct access.
- */
 function getDisTube() {
   if (!distube) {
     throw new Error(

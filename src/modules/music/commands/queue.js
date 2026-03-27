@@ -1,4 +1,5 @@
-const { SlashCommandBuilder } = require("discord.js");
+// src/modules/music/commands/queue.js
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -6,29 +7,50 @@ module.exports = {
     .setDescription("Show the current music queue"),
 
   async execute(interaction) {
-    const distube = interaction.client.distube;
-    if (!distube) {
-      await interaction.reply({
-        content: "❌ Music system not ready.",
-        ephemeral: true,
-      });
-      return;
+    try {
+      const distube = interaction.client.distube;
+      if (!distube) {
+        return interaction.reply({
+          content: "❌ Music system is not initialized on this bot.",
+          ephemeral: true,
+        });
+      }
+
+      const queue = distube.getQueue(interaction.guildId);
+      if (!queue || !queue.songs || queue.songs.length === 0) {
+        return interaction.reply({
+          content: "📭 Queue is empty. Use `/play` to add something.",
+          ephemeral: true,
+        });
+      }
+
+      const now = queue.songs[0];
+      const upNext = queue.songs.slice(1, 11);
+
+      const embed = new EmbedBuilder()
+        .setTitle("🎶 Music Queue")
+        .setDescription(
+          `**Now Playing:** ${now.name} \`${now.formattedDuration}\`\n` +
+            (upNext.length
+              ? `\n**Up Next:**\n${upNext
+                  .map(
+                    (s, i) =>
+                      `**${i + 1}.** ${s.name} \`${s.formattedDuration}\``,
+                  )
+                  .join("\n")}`
+              : "\n**Up Next:** *(nothing)*"),
+        )
+        .setColor(0x5865f2);
+
+      return interaction.reply({ embeds: [embed] });
+    } catch (err) {
+      console.error("[music] /queue error:", err);
+      if (!interaction.replied && !interaction.deferred) {
+        return interaction.reply({
+          content: "❌ Error showing queue.",
+          ephemeral: true,
+        });
+      }
     }
-
-    const queue = distube.get(interaction.guild.id);
-    if (!queue || !queue.songs.length) {
-      await interaction.reply({
-        content: "📭 The queue is empty.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    const lines = queue.songs.slice(0, 10).map((s, i) => {
-      const prefix = i === 0 ? "▶️ Now" : `#${i}`;
-      return `${prefix} • **${s.name}** \`[${s.formattedDuration}]\` • requested by <@${s.user?.id}>`;
-    });
-
-    await interaction.reply(lines.join("\n"));
   },
 };
