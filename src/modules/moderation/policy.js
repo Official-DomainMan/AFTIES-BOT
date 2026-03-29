@@ -7,7 +7,6 @@ async function getPolicy(guildId) {
     create: { guildId },
   });
 
-  // Backfill any nulls (in case of old rows)
   return {
     ...policy,
     warnExpiresDays: policy.warnExpiresDays ?? 30,

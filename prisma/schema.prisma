@@ -8,7 +8,7 @@ datasource db {
 }
 
 model LastLetterState {
-  guildId    String @id
+  guildId    String   @id
   channelId  String
   lastWord   String
   lastLetter String?
@@ -39,7 +39,7 @@ model CountingUserStat {
 }
 
 model PhoneGuyConfig {
-  guildId      String @id
+  guildId      String   @id
   channelId    String?
   logChannelId String?
   updatedAt    DateTime @updatedAt
@@ -57,19 +57,19 @@ model PhoneGuyQueue {
   id        String   @id @default(cuid())
   userId    String
   guildId   String
-  mode      String   // "global"
+  mode      String // "global"
   createdAt DateTime @default(now())
 }
 
 model PhoneGuyCall {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userAId   String
   guildAId  String
   userBId   String
   guildBId  String
-  mode      String   // "local" | "global"
-  status    String   @default("active") // "active" | "ended"
-  startedAt DateTime @default(now())
+  mode      String // "local" | "global"
+  status    String    @default("active") // "active" | "ended"
+  startedAt DateTime  @default(now())
   endedAt   DateTime?
 }
 
@@ -82,20 +82,20 @@ model PhoneGuyBlock {
 }
 
 model PhoneGuyCooldown {
-  userId    String @id
+  userId    String   @id
   lastStart DateTime
 }
 
 model PhoneGuyLog {
-  id        String   @id @default(cuid())
-  type      String   // "queue_join" | "match" | "end" | "say"
-  mode      String?  // "local" | "global"
-  callId    String?
-  guildId   String?
-  userId    String?
+  id          String   @id @default(cuid())
+  type        String // "queue_join" | "match" | "end" | "say"
+  mode        String? // "local" | "global"
+  callId      String?
+  guildId     String?
+  userId      String?
   otherUserId String?
-  message   String?
-  createdAt DateTime @default(now())
+  message     String?
+  createdAt   DateTime @default(now())
 }
 
 model ModConfig {
@@ -105,14 +105,14 @@ model ModConfig {
 }
 
 model Infraction {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   guildId   String
   userId    String
   modId     String
-  type      String   // "warn" | "timeout" | "kick" | "ban" | "purge" | "note"
+  type      String // "warn" | "timeout" | "kick" | "ban" | "purge" | "note"
   reason    String?
   meta      Json?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   expiresAt DateTime?
 
   @@index([guildId, userId, createdAt])
@@ -120,17 +120,18 @@ model Infraction {
 }
 
 model ModPolicy {
-  guildId              String   @id
-  warnExpiresDays      Int      @default(30)
-  warnWindowDays       Int      @default(7)
-  autoTimeoutWarnCount Int      @default(3)
-  autoTimeoutMinutes   Int      @default(60)
+  guildId              String @id
+  warnExpiresDays      Int    @default(30)
+  warnWindowDays       Int    @default(7)
+  autoTimeoutWarnCount Int    @default(3)
+  autoTimeoutMinutes   Int    @default(60)
 
-  dmOnWarn             Boolean  @default(false)
-  dmOnAutoTimeout      Boolean  @default(false)
+  dmOnWarn        Boolean @default(false)
+  dmOnAutoTimeout Boolean @default(false)
 
-  updatedAt            DateTime @updatedAt
+  updatedAt DateTime @updatedAt
 }
+
 model LastLetterScore {
   id        Int      @id @default(autoincrement())
   guildId   String
@@ -140,16 +141,18 @@ model LastLetterScore {
 
   @@unique([guildId, userId])
 }
+
 model LevelProfile {
-  guildId     String
-  userId      String
-  xp          Int      @default(0)
-  level       Int      @default(0)
-  lastXpAt    DateTime?
+  guildId  String
+  userId   String
+  xp       Int       @default(0)
+  level    Int       @default(0)
+  lastXpAt DateTime?
 
   @@id([guildId, userId])
   @@index([guildId, xp(sort: Desc)])
 }
+
 model LevelRoleReward {
   guildId String
   level   Int
@@ -157,15 +160,17 @@ model LevelRoleReward {
 
   @@id([guildId, level])
 }
+
 model LevelRole {
-  guildId      String
-  roleId       String
+  guildId       String
+  roleId        String
   requiredLevel Int
 
   created DateTime @default(now())
 
   @@id([guildId, roleId])
 }
+
 model LevelSettings {
   guildId          String  @id
   levelUpChannelId String?
@@ -173,40 +178,42 @@ model LevelSettings {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
 model EconomyProfile {
-  id          Int      @id @default(autoincrement())
-  guildId     String
-  userId      String
-  balance     Int      @default(0)
+  id      Int    @id @default(autoincrement())
+  guildId String
+  userId  String
+  balance Int    @default(0)
 
   /// last time they successfully claimed /daily
-  lastDailyAt DateTime?  // <-- this is what your code is using
+  lastDailyAt DateTime? // <-- this is what your code is using
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([guildId, userId])
 }
 
 model EconomyTransaction {
-  id        String   @id @default(cuid())
-  guildId   String
-  userId    String
+  id      String @id @default(cuid())
+  guildId String
+  userId  String
 
   /// DAILY, PAY_SENT, PAY_RECEIVED, BLACKJACK_WIN, BLACKJACK_LOSS,
   /// SLOTS_WIN, SLOTS_LOSS, ROULETTE_WIN, ROULETTE_LOSS, etc.
-  type      String
+  type String
 
   /// Positive = credit, negative = debit
-  amount    Int
+  amount Int
 
   /// Optional description (e.g. "To @User", "Blackjack hand", etc.)
-  note      String?
+  note String?
 
   createdAt DateTime @default(now())
 
   @@index([guildId, userId, createdAt])
 }
+
 model TicketSettings {
   guildId       String   @id
   categoryId    String?
@@ -215,18 +222,71 @@ model TicketSettings {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
-model Ticket {
-  id           String   @id @default(cuid())
-  guildId      String
-  channelId    String   @unique
-  ownerId      String
-  isOpen       Boolean  @default(true)
-  claimedById  String?
-  closeReason  String?
-  createdAt    DateTime @default(now())
-  closedAt     DateTime?
 
+model Ticket {
+  id          String    @id @default(cuid())
+  guildId     String
+  channelId   String    @unique
+  ownerId     String
+  isOpen      Boolean   @default(true)
+  claimedById String?
+  closeReason String?
+  createdAt   DateTime  @default(now())
+  closedAt    DateTime?
+
+  @@unique([guildId, ownerId, isOpen])
   @@index([guildId, ownerId])
   @@index([guildId, isOpen])
-  @@unique([guildId, ownerId, isOpen])
+}
+
+model ModCase {
+  id           String   @id @default(cuid())
+  guildId      String
+  infractionId String?  @unique
+  targetUserId String
+  actorUserId  String
+  type         String // "warn" | "timeout" | "kick" | "ban" | "note"
+  reason       String?
+  status       String   @default("open") // "open" | "closed" | "upheld" | "overturned"
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  notes   CaseNote[]
+  appeals Appeal[]
+
+  @@index([guildId, targetUserId, createdAt])
+  @@index([guildId, createdAt])
+}
+
+model CaseNote {
+  id        String   @id @default(cuid())
+  caseId    String
+  guildId   String
+  authorId  String
+  note      String
+  createdAt DateTime @default(now())
+
+  case ModCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+  @@index([guildId, createdAt])
+}
+
+model Appeal {
+  id           String    @id @default(cuid())
+  caseId       String
+  guildId      String
+  userId       String
+  reason       String
+  status       String    @default("pending") // "pending" | "approved" | "denied"
+  reviewedById String?
+  reviewNote   String?
+  reviewedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  case ModCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+  @@index([guildId, status, createdAt])
 }
