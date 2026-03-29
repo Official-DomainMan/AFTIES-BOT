@@ -1,10 +1,16 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   ChannelType,
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
+
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
 
 function sanitizeTicketName(input) {
   return input
@@ -33,18 +39,16 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild || !interaction.channel) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const channel = interaction.channel;
 
       if (channel.type !== ChannelType.GuildText) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ This command only works in a text ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -57,10 +61,9 @@ module.exports = {
         ticket.guildId !== interaction.guild.id ||
         !ticket.isOpen
       ) {
-        return interaction.reply({
+        return respond(interaction, {
           content:
             "❌ This command can only be used inside an open ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -68,10 +71,9 @@ module.exports = {
       const safeName = sanitizeTicketName(rawName);
 
       if (!safeName || safeName.length < 3) {
-        return interaction.reply({
+        return respond(interaction, {
           content:
             "❌ That name is too short or contains no usable characters. Use at least 3 letters or numbers.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -80,9 +82,8 @@ module.exports = {
         : `ticket-${safeName}`;
 
       if (channel.name === finalName) {
-        return interaction.reply({
+        return respond(interaction, {
           content: `ℹ️ This ticket is already named \`${finalName}\`.`,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -95,22 +96,14 @@ module.exports = {
         },
       });
 
-      return interaction.reply({
+      return respond(interaction, {
         content: `✅ Ticket renamed to \`${finalName}\`.`,
-        flags: MessageFlags.Ephemeral,
       });
     } catch (error) {
       console.error("[ticket-rename] error:", error);
 
-      if (interaction.deferred || interaction.replied) {
-        return interaction.editReply({
-          content: "❌ Failed to rename this ticket.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to rename this ticket.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },

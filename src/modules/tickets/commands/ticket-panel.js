@@ -9,6 +9,13 @@ const {
   MessageFlags,
 } = require("discord.js");
 
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("ticket-panel")
@@ -41,9 +48,8 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -65,9 +71,8 @@ module.exports = {
         ].join("\n");
 
       if (!targetChannel || !targetChannel.isTextBased()) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ I can only post the ticket panel in a text channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -76,32 +81,28 @@ module.exports = {
         (await interaction.guild.members.fetchMe().catch(() => null));
 
       if (!botMember) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ I couldn't resolve my bot member in this server.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const perms = targetChannel.permissionsFor(botMember);
 
       if (!perms?.has(PermissionFlagsBits.ViewChannel)) {
-        return interaction.reply({
+        return respond(interaction, {
           content: `❌ I cannot view ${targetChannel}.`,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       if (!perms?.has(PermissionFlagsBits.SendMessages)) {
-        return interaction.reply({
+        return respond(interaction, {
           content: `❌ I cannot send messages in ${targetChannel}.`,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       if (!perms?.has(PermissionFlagsBits.EmbedLinks)) {
-        return interaction.reply({
+        return respond(interaction, {
           content: `❌ I cannot embed links in ${targetChannel}.`,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -126,22 +127,14 @@ module.exports = {
         components: [row],
       });
 
-      return interaction.reply({
+      return respond(interaction, {
         content: `✅ Ticket panel posted in ${targetChannel}.\nMessage ID: \`${sentMessage.id}\``,
-        flags: MessageFlags.Ephemeral,
       });
     } catch (error) {
       console.error("[ticket-panel] error:", error);
 
-      if (interaction.replied || interaction.deferred) {
-        return interaction.editReply({
-          content: "❌ Failed to post the ticket panel.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to post the ticket panel.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },

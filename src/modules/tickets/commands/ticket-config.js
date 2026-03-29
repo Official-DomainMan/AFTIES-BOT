@@ -3,9 +3,15 @@ const {
   PermissionFlagsBits,
   ChannelType,
   EmbedBuilder,
-  MessageFlags,
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
+
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
 
 function yesNo(value) {
   return value ? "Yes" : "No";
@@ -28,9 +34,8 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -44,10 +49,9 @@ module.exports = {
         });
 
         if (!settings) {
-          return interaction.reply({
+          return respond(interaction, {
             content:
               "ℹ️ No ticket configuration is currently saved for this server.",
-            flags: MessageFlags.Ephemeral,
           });
         }
 
@@ -193,9 +197,8 @@ module.exports = {
           )
           .setTimestamp();
 
-        return interaction.reply({
+        return respond(interaction, {
           embeds: [embed],
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -205,9 +208,8 @@ module.exports = {
         });
 
         if (!settings) {
-          return interaction.reply({
+          return respond(interaction, {
             content: "ℹ️ There is no saved ticket configuration to clear.",
-            flags: MessageFlags.Ephemeral,
           });
         }
 
@@ -245,28 +247,19 @@ module.exports = {
           )
           .setTimestamp();
 
-        return interaction.reply({
+        return respond(interaction, {
           embeds: [embed],
-          flags: MessageFlags.Ephemeral,
         });
       }
 
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Unknown subcommand.",
-        flags: MessageFlags.Ephemeral,
       });
     } catch (error) {
       console.error("[ticket-config] error:", error);
 
-      if (interaction.replied || interaction.deferred) {
-        return interaction.editReply({
-          content: "❌ Failed to run `/ticket-config`.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to run `/ticket-config`.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },

@@ -1,10 +1,16 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   ChannelType,
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
+
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -21,18 +27,16 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild || !interaction.channel) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const channel = interaction.channel;
 
       if (channel.type !== ChannelType.GuildText) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ This command only works in a text ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -45,20 +49,18 @@ module.exports = {
         ticket.guildId !== interaction.guild.id ||
         !ticket.isOpen
       ) {
-        return interaction.reply({
+        return respond(interaction, {
           content:
             "❌ This command can only be used inside an open ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const user = interaction.options.getUser("user", true);
 
       if (user.id === ticket.ownerId) {
-        return interaction.reply({
+        return respond(interaction, {
           content:
             "❌ You cannot remove the ticket owner from their own ticket.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -71,9 +73,8 @@ module.exports = {
           settings.supportRoleId,
         );
         if (supportRole && user.id === interaction.guild.ownerId) {
-          return interaction.reply({
+          return respond(interaction, {
             content: "❌ You cannot remove the server owner from the ticket.",
-            flags: MessageFlags.Ephemeral,
           });
         }
       }
@@ -84,9 +85,8 @@ module.exports = {
         ?.has(PermissionFlagsBits.ViewChannel);
 
       if (!existingOverwrite && !hasView) {
-        return interaction.reply({
+        return respond(interaction, {
           content: `ℹ️ <@${user.id}> does not appear to have direct access to this ticket.`,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -103,22 +103,14 @@ module.exports = {
         },
       });
 
-      return interaction.reply({
+      return respond(interaction, {
         content: `✅ Removed <@${user.id}> from this ticket.`,
-        flags: MessageFlags.Ephemeral,
       });
     } catch (error) {
       console.error("[ticket-remove] error:", error);
 
-      if (interaction.deferred || interaction.replied) {
-        return interaction.editReply({
-          content: "❌ Failed to remove that user from the ticket.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to remove that user from the ticket.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },

@@ -39,6 +39,7 @@ async function ensureOneOpenTicket(guildId, ownerId) {
 async function validateTicketContext(guild, settings) {
   const botMember =
     guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+
   if (!botMember) {
     return {
       ok: false,
@@ -121,10 +122,31 @@ async function createTicketChannel(guild, ownerId, settings) {
     throw err;
   }
 
+  const botMember =
+    guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+
+  if (!botMember) {
+    const err = new Error("Bot member unavailable.");
+    err.userSafeMessage = "❌ I couldn't resolve my bot member in this server.";
+    throw err;
+  }
+
   const overwrites = [
     {
       id: guild.roles.everyone.id,
       deny: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: botMember.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.AttachFiles,
+        PermissionFlagsBits.EmbedLinks,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.ManageMessages,
+      ],
     },
     {
       id: ownerId,
@@ -155,7 +177,7 @@ async function createTicketChannel(guild, ownerId, settings) {
     });
   }
 
-  const channelName = `ticket-${ownerId}`;
+  const channelName = `ticket-${owner ? owner.user.id : ownerId}`;
 
   const channel = await guild.channels.create({
     name: channelName,
@@ -163,6 +185,17 @@ async function createTicketChannel(guild, ownerId, settings) {
     parent: validation.parent?.id ?? null,
     permissionOverwrites: overwrites,
   });
+
+  const botPerms = channel.permissionsFor(botMember);
+  if (
+    !botPerms?.has(PermissionFlagsBits.ViewChannel) ||
+    !botPerms?.has(PermissionFlagsBits.SendMessages)
+  ) {
+    const err = new Error("Bot lacks access to the created ticket channel.");
+    err.userSafeMessage =
+      "❌ I created the ticket channel but do not have permission to view/send messages in it. Check category overwrites and bot role permissions.";
+    throw err;
+  }
 
   const mention = `<@${ownerId}>`;
 
@@ -256,7 +289,7 @@ async function createTicket(interaction) {
     return replyOrEdit(interaction, {
       content:
         error.userSafeMessage ||
-        "❌ I couldn't create the ticket channel. Check my category permissions, Manage Channels permission, and ticket configuration.",
+        "❌ I couldn't create the ticket channel. Check my category permissions, channel access, and ticket configuration.",
       flags: EPHEMERAL_FLAGS,
     });
   }

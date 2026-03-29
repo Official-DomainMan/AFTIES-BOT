@@ -1,10 +1,16 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   ChannelType,
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
+
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -21,18 +27,16 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild || !interaction.channel) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const channel = interaction.channel;
 
       if (channel.type !== ChannelType.GuildText) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ This command only works in a text ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -45,19 +49,17 @@ module.exports = {
         ticket.guildId !== interaction.guild.id ||
         !ticket.isOpen
       ) {
-        return interaction.reply({
+        return respond(interaction, {
           content:
             "❌ This command can only be used inside an open ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const user = interaction.options.getUser("user", true);
 
       if (user.bot && user.id !== interaction.client.user.id) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ You can only add human users to tickets.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -66,18 +68,16 @@ module.exports = {
         .catch(() => null);
 
       if (!member) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ That user is not in this server.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const existingPerms = channel.permissionsFor(user.id);
 
       if (existingPerms?.has(PermissionFlagsBits.ViewChannel)) {
-        return interaction.reply({
+        return respond(interaction, {
           content: `ℹ️ <@${user.id}> already has access to this ticket.`,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -96,22 +96,14 @@ module.exports = {
         },
       });
 
-      return interaction.reply({
+      return respond(interaction, {
         content: `✅ Added <@${user.id}> to this ticket.`,
-        flags: MessageFlags.Ephemeral,
       });
     } catch (error) {
       console.error("[ticket-add] error:", error);
 
-      if (interaction.deferred || interaction.replied) {
-        return interaction.editReply({
-          content: "❌ Failed to add that user to the ticket.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to add that user to the ticket.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },

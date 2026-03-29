@@ -1,11 +1,17 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   ChannelType,
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
 const { closeTicket } = require("../service");
+
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -23,18 +29,16 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild || !interaction.channel) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const channel = interaction.channel;
 
       if (channel.type !== ChannelType.GuildText) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ This command only works in a text ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -47,10 +51,9 @@ module.exports = {
         ticket.guildId !== interaction.guild.id ||
         !ticket.isOpen
       ) {
-        return interaction.reply({
+        return respond(interaction, {
           content:
             "❌ This command can only be used inside an open ticket channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -60,15 +63,8 @@ module.exports = {
     } catch (error) {
       console.error("[ticket-close] error:", error);
 
-      if (interaction.deferred || interaction.replied) {
-        return interaction.editReply({
-          content: "❌ Failed to close this ticket.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to close this ticket.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },
