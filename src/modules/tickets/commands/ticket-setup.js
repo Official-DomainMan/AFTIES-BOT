@@ -7,6 +7,13 @@ const {
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
 
+function respond(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("ticket-setup")
@@ -38,9 +45,8 @@ module.exports = {
   async execute(interaction) {
     try {
       if (!interaction.guild) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ Server only.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -51,9 +57,8 @@ module.exports = {
         guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
 
       if (!botMember) {
-        return interaction.reply({
+        return respond(interaction, {
           content: "❌ I couldn't resolve my bot member in this server.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -121,7 +126,7 @@ module.exports = {
 
         if (supportRole.managed) {
           validationWarnings.push(
-            `${supportRole} is an integration-managed role. That's okay if intentional, but double-check it is the role you want pinged for tickets.`,
+            `${supportRole} is an integration-managed role. Double-check that this is intentional.`,
           );
         }
       }
@@ -151,9 +156,8 @@ module.exports = {
           });
         }
 
-        return interaction.reply({
+        return respond(interaction, {
           embeds: [embed],
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -168,10 +172,9 @@ module.exports = {
         });
 
         if (!existing) {
-          return interaction.reply({
+          return respond(interaction, {
             content:
               "❌ You didn't provide any values, and no ticket settings currently exist.",
-            flags: MessageFlags.Ephemeral,
           });
         }
 
@@ -203,9 +206,8 @@ module.exports = {
           )
           .setTimestamp();
 
-        return interaction.reply({
+        return respond(interaction, {
           embeds: [embed],
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -250,22 +252,14 @@ module.exports = {
         });
       }
 
-      return interaction.reply({
+      return respond(interaction, {
         embeds: [embed],
-        flags: MessageFlags.Ephemeral,
       });
     } catch (err) {
       console.error("[ticket-setup] error:", err);
 
-      if (interaction.replied || interaction.deferred) {
-        return interaction.editReply({
-          content: "❌ Failed to update ticket settings.",
-        });
-      }
-
-      return interaction.reply({
+      return respond(interaction, {
         content: "❌ Failed to update ticket settings.",
-        flags: MessageFlags.Ephemeral,
       });
     }
   },
