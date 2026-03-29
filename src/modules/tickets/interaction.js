@@ -13,7 +13,6 @@ const {
 } = require("./service");
 
 async function handleTicketInteraction(interaction) {
-  // Buttons
   if (interaction.isButton()) {
     const id = interaction.customId;
 
@@ -30,7 +29,6 @@ async function handleTicketInteraction(interaction) {
     }
 
     if (id === "ticket_close") {
-      // Show modal to capture reason (optional enhancement)
       const modal = new ModalBuilder()
         .setCustomId("ticket_close_modal")
         .setTitle("Close Ticket");
@@ -48,13 +46,18 @@ async function handleTicketInteraction(interaction) {
       return;
     }
 
+    if (interaction.deferred || interaction.replied) {
+      return interaction.editReply({
+        content: "Unknown ticket action.",
+      });
+    }
+
     return interaction.reply({
       content: "Unknown ticket action.",
       flags: EPHEMERAL_FLAGS,
     });
   }
 
-  // Modals
   if (interaction.isModalSubmit()) {
     if (interaction.customId === "ticket_close_modal") {
       const reason =

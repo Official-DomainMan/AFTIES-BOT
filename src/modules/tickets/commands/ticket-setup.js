@@ -2,6 +2,8 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   ChannelType,
+  MessageFlags,
+  EmbedBuilder,
 } = require("discord.js");
 const { prisma } = require("../../../core/database");
 
@@ -35,42 +37,236 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      if (!interaction.guild)
-        return interaction.reply({ content: "Server only.", flags: 64 });
+      if (!interaction.guild) {
+        return interaction.reply({
+          content: "❌ Server only.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
-      const guildId = interaction.guild.id;
+      const guild = interaction.guild;
+      const guildId = guild.id;
+
+      const botMember =
+        guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+
+      if (!botMember) {
+        return interaction.reply({
+          content: "❌ I couldn't resolve my bot member in this server.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
       const category = interaction.options.getChannel("category");
       const supportRole = interaction.options.getRole("support_role");
       const logChannel = interaction.options.getChannel("log_channel");
+
+      const validationProblems = [];
+      const validationWarnings = [];
+
+      if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
+        validationProblems.push(
+          "I am missing **Manage Channels** at the server level.",
+        );
+      }
+
+      if (category) {
+        if (category.type !== ChannelType.GuildCategory) {
+          validationProblems.push(
+            "The selected category is not a valid category.",
+          );
+        } else {
+          const categoryPerms = category.permissionsFor(botMember);
+
+          if (!categoryPerms?.has(PermissionFlagsBits.ViewChannel)) {
+            validationProblems.push(
+              `I cannot **View Channel** in ${category}.`,
+            );
+          }
+
+          if (!categoryPerms?.has(PermissionFlagsBits.ManageChannels)) {
+            validationProblems.push(
+              `I cannot **Manage Channels** in ${category}.`,
+            );
+          }
+        }
+      }
+
+      if (logChannel) {
+        const logPerms = logChannel.permissionsFor(botMember);
+
+        if (!logPerms?.has(PermissionFlagsBits.ViewChannel)) {
+          validationProblems.push(
+            `I cannot **View Channel** in ${logChannel}.`,
+          );
+        }
+
+        if (!logPerms?.has(PermissionFlagsBits.SendMessages)) {
+          validationProblems.push(
+            `I cannot **Send Messages** in ${logChannel}.`,
+          );
+        }
+
+        if (!logPerms?.has(PermissionFlagsBits.AttachFiles)) {
+          validationWarnings.push(
+            `I cannot **Attach Files** in ${logChannel}, so transcript uploads may fail.`,
+          );
+        }
+      }
+
+      if (supportRole) {
+        if (!guild.roles.cache.has(supportRole.id)) {
+          validationProblems.push("The selected support role does not exist.");
+        }
+
+        if (supportRole.managed) {
+          validationWarnings.push(
+            `${supportRole} is an integration-managed role. That's okay if intentional, but double-check it is the role you want pinged for tickets.`,
+          );
+        }
+      }
+
+      if (validationProblems.length > 0) {
+        const embed = new EmbedBuilder()
+          .setTitle("❌ Ticket setup failed validation")
+          .setDescription(
+            "Fix these permission/configuration issues, then run `/ticket-setup` again.",
+          )
+          .addFields({
+            name: "Problems",
+            value: validationProblems
+              .map((x) => `• ${x}`)
+              .join("\n")
+              .slice(0, 1024),
+          })
+          .setTimestamp();
+
+        if (validationWarnings.length > 0) {
+          embed.addFields({
+            name: "Warnings",
+            value: validationWarnings
+              .map((x) => `• ${x}`)
+              .join("\n")
+              .slice(0, 1024),
+          });
+        }
+
+        return interaction.reply({
+          embeds: [embed],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
       const data = {};
       if (category) data.categoryId = category.id;
       if (supportRole) data.supportRoleId = supportRole.id;
       if (logChannel) data.logChannelId = logChannel.id;
 
-      // upsert settings
-      await prisma.ticketSettings.upsert({
+      if (Object.keys(data).length === 0) {
+        const existing = await prisma.ticketSettings.findUnique({
+          where: { guildId },
+        });
+
+        if (!existing) {
+          return interaction.reply({
+            content:
+              "❌ You didn't provide any values, and no ticket settings currently exist.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle("🎟️ Current ticket settings")
+          .setDescription("No changes were made.")
+          .addFields(
+            {
+              name: "Category",
+              value: existing.categoryId
+                ? `<#${existing.categoryId}>`
+                : "Not set",
+              inline: true,
+            },
+            {
+              name: "Support Role",
+              value: existing.supportRoleId
+                ? `<@&${existing.supportRoleId}>`
+                : "Not set",
+              inline: true,
+            },
+            {
+              name: "Log Channel",
+              value: existing.logChannelId
+                ? `<#${existing.logChannelId}>`
+                : "Not set",
+              inline: true,
+            },
+          )
+          .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const updated = await prisma.ticketSettings.upsert({
         where: { guildId },
         update: data,
         create: { guildId, ...data },
       });
 
+      const embed = new EmbedBuilder()
+        .setTitle("✅ Ticket settings updated")
+        .addFields(
+          {
+            name: "Category",
+            value: updated.categoryId ? `<#${updated.categoryId}>` : "Not set",
+            inline: true,
+          },
+          {
+            name: "Support Role",
+            value: updated.supportRoleId
+              ? `<@&${updated.supportRoleId}>`
+              : "Not set",
+            inline: true,
+          },
+          {
+            name: "Log Channel",
+            value: updated.logChannelId
+              ? `<#${updated.logChannelId}>`
+              : "Not set",
+            inline: true,
+          },
+        )
+        .setTimestamp();
+
+      if (validationWarnings.length > 0) {
+        embed.addFields({
+          name: "Warnings",
+          value: validationWarnings
+            .map((x) => `• ${x}`)
+            .join("\n")
+            .slice(0, 1024),
+        });
+      }
+
       return interaction.reply({
-        content:
-          `✅ Ticket settings updated.\n` +
-          (category ? `• Category: ${category}\n` : "") +
-          (supportRole ? `• Support role: ${supportRole}\n` : "") +
-          (logChannel ? `• Log channel: ${logChannel}\n` : ""),
-        flags: 64,
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
       });
     } catch (err) {
       console.error("[ticket-setup] error:", err);
-      if (!interaction.replied) {
-        await interaction.reply({
+
+      if (interaction.replied || interaction.deferred) {
+        return interaction.editReply({
           content: "❌ Failed to update ticket settings.",
-          flags: 64,
         });
       }
+
+      return interaction.reply({
+        content: "❌ Failed to update ticket settings.",
+        flags: MessageFlags.Ephemeral,
+      });
     }
   },
 };
